@@ -607,7 +607,8 @@ func (s *SocksProcessor) clienCommend(ctx context.Context, cmd byte) error {
 	return SocksErrConnectionRefused
 }
 
-// Process implements the overall process for socksv4 and socksv5.
+// Process implements the overall process for socksv4 and socksv5. The optional cmd
+// specifies the client-side command, while will be ignored for server-side.
 func (s *SocksProcessor) Process(ctx context.Context, cmd ...byte) (err error) {
 	if s.version == SocksV5 { // only v5 need to authenticate
 		err = s.Authenticate(ctx)

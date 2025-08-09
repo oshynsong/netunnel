@@ -48,6 +48,11 @@ func (t TunnelConnID) String() string {
 	return hex.EncodeToString([]byte(t))
 }
 
+const (
+	defaultTunnelConnTimeout   = time.Second * 5
+	defaultTunnelAcceptTimeout = time.Second * 10
+)
+
 // TunnelConn represents a actual connection created on the Tunnel facility.
 type TunnelConn struct {
 	net.Conn

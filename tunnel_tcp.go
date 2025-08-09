@@ -10,20 +10,33 @@ import (
 type TCPTunnel struct {
 	clientAddr   string
 	clientHandle net.Conn
+	connTimeout  time.Duration
 
-	serverAddr   string
-	serverHandle net.Listener
+	serverAddr    string
+	serverHandle  net.Listener
+	acceptTimeout time.Duration
 
 	transformerMaker func() (Transformer, error)
 }
 
-func NewTCPTunnel(tm func() (Transformer, error)) Tunnel {
+func NewTCPTunnel(tm func() (Transformer, error), connTm, acceptTm time.Duration) Tunnel {
 	if tm == nil {
 		tm = func() (Transformer, error) {
 			return NewNullTransformer(), nil
 		}
 	}
-	return &TCPTunnel{transformerMaker: tm}
+	tt := &TCPTunnel{
+		connTimeout:      connTm,
+		acceptTimeout:    acceptTm,
+		transformerMaker: tm,
+	}
+	if tt.connTimeout == 0 {
+		tt.connTimeout = defaultTunnelConnTimeout
+	}
+	if tt.acceptTimeout == 0 {
+		tt.acceptTimeout = defaultTunnelAcceptTimeout
+	}
+	return tt
 }
 
 func (t *TCPTunnel) Open(ctx context.Context, network, remoteAddr string) error {
@@ -31,7 +44,7 @@ func (t *TCPTunnel) Open(ctx context.Context, network, remoteAddr string) error 
 		return ErrInvalidNetwork
 	}
 
-	conn, err := net.Dial(network, remoteAddr)
+	conn, err := net.DialTimeout(network, remoteAddr, t.connTimeout)
 	if err != nil {
 		return err
 	}
@@ -81,7 +94,7 @@ func (t *TCPTunnel) Dial(ctx context.Context, network, targetAddr string) (*Tunn
 		return nil, ErrInvalidNetwork
 	}
 
-	conn, err := net.Dial(network, t.serverAddr)
+	conn, err := net.DialTimeout(network, t.serverAddr, t.connTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -116,24 +129,28 @@ func (t *TCPTunnel) Listen(ctx context.Context, network, serverAddr string) erro
 	return nil
 }
 
-func (t *TCPTunnel) Accept(ctx context.Context) (*TunnelConn, string, error) {
+func (t *TCPTunnel) Accept(ctx context.Context) (tc *TunnelConn, targetAddr string, err error) {
 	conn, err := t.serverHandle.Accept()
 	if err != nil {
-		return nil, "", err
+		return nil, targetAddr, err
+	}
+	if err = conn.SetDeadline(time.Now().Add(t.acceptTimeout)); err != nil {
+		return nil, targetAddr, err
 	}
 
 	transformer, err := t.transformerMaker()
 	if err != nil {
-		return nil, "", err
+		return nil, targetAddr, err
 	}
-	tc := NewTunnelConn(ctx, conn, transformer)
+	tc = NewTunnelConn(ctx, conn, transformer)
 	LogInfo(ctx, "TCPTunnel.Accept: start to accept addr with id %s", tc.ID())
 
 	sa, err := NewSocksAddrStream(tc)
 	if err != nil {
-		return nil, "", err
+		return nil, targetAddr, err
 	}
-	targetAddr := sa.String()
+	defer conn.SetDeadline(time.Time{}) // accept success within the timeout, set no-timeout for later read/writes
+	targetAddr = sa.String()
 	LogInfo(ctx, "TCPTunnel.Accept: accept and get target addr %s with id %s", targetAddr, tc.ID())
 	return tc, targetAddr, nil
 }

@@ -19,6 +19,7 @@ const (
 type SSHTunnel struct {
 	serverListener net.Listener
 	serverAcceptCh chan func() (net.Addr, ssh.Channel, []byte)
+	acceptTimeout  time.Duration
 	authorizedKey  string
 	sshClient      *ssh.Client
 	sshUser        string
@@ -56,9 +57,10 @@ func WithSSHTunnelAuthorizedKey(key string) SSHTunnelOpt {
 	}
 }
 
-func WithSSHTunnelConnTimeout(timeout time.Duration) SSHTunnelOpt {
+func WithSSHTunnelTimeout(conn, accept time.Duration) SSHTunnelOpt {
 	return func(t *SSHTunnel) {
-		t.connTimeout = timeout
+		t.acceptTimeout = accept
+		t.connTimeout = conn
 	}
 }
 
@@ -67,6 +69,12 @@ func NewSSHTunnel(opts ...SSHTunnelOpt) Tunnel {
 	st := &SSHTunnel{done: make(chan struct{})}
 	for _, opt := range opts {
 		opt(st)
+	}
+	if st.connTimeout == 0 {
+		st.connTimeout = defaultTunnelConnTimeout
+	}
+	if st.acceptTimeout == 0 {
+		st.acceptTimeout = defaultTunnelAcceptTimeout
 	}
 	return st
 }
@@ -285,8 +293,20 @@ func (s *SSHTunnel) Listen(ctx context.Context, network, serverAddr string) erro
 }
 
 func (s *SSHTunnel) Accept(ctx context.Context) (*TunnelConn, string, error) {
-	accepted := <-s.serverAcceptCh
-	fromAddr, channel, extra := accepted()
+	acceptCtx, cancel := context.WithTimeout(ctx, s.acceptTimeout)
+	defer cancel()
+	var (
+		fromAddr net.Addr
+		channel  ssh.Channel
+		extra    []byte
+	)
+	select {
+	case accepted := <-s.serverAcceptCh:
+		fromAddr, channel, extra = accepted()
+	case <-acceptCtx.Done():
+		return nil, "", acceptCtx.Err()
+	}
+
 	channelConn := &sshChannelConn{
 		Channel:    channel,
 		localAddr:  s.serverListener.Addr(),

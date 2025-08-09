@@ -11,10 +11,53 @@ import (
 // EndpointType defines different type of endpoint.
 type EndpointType = byte
 
+// The server and client side endpoint enum.
 const (
 	EndpointServer EndpointType = iota
 	EndpointClient
 )
+
+// ProxyProto defines how to handshake and get the target addr to build the proxy.
+type ProxyProto = func(ctx context.Context, local net.Conn) (addr string, err error)
+
+func NewSocksV4ProxyProto() ProxyProto {
+	return func(ctx context.Context, local net.Conn) (addr string, err error) {
+		sp := NewSocksProcessor(local, WithSocksVersion(SocksV4))
+		if err = sp.Process(ctx); err != nil {
+			return
+		}
+		return sp.RequestAddr.String(), nil
+	}
+}
+
+func NewSocksV5ProxyProto(user, pass string) ProxyProto {
+	return func(ctx context.Context, local net.Conn) (addr string, err error) {
+		opts := []SocksOpt{WithSocksVersion(SocksV5)}
+		if len(user) != 0 && len(pass) != 0 {
+			opts = append(opts, WithSocksAuthMethod([]byte{SocksAuthMethodUserPass}, SocksAuthMethodUserPass))
+			opts = append(opts, WithSocksAuthUserPass(user, pass))
+		}
+		sp := NewSocksProcessor(local, opts...)
+		if err = sp.Process(ctx); err != nil {
+			return
+		}
+		return sp.RequestAddr.String(), nil
+	}
+}
+
+func NewHttp11ProxyProto(user, pass string) ProxyProto {
+	return func(ctx context.Context, local net.Conn) (addr string, err error) {
+		opts := []HttpOpt{WithHttpVersion(HttpProxyDefaultVersion)}
+		if len(user) != 0 && len(pass) != 0 {
+			opts = append(opts, WithHttpAuthUserPass(user, pass))
+		}
+		hp := NewHttpProcessor(local, opts...)
+		if err = hp.Process(ctx); err != nil {
+			return
+		}
+		return hp.RequestAddr, nil
+	}
+}
 
 // Endpoint implements the core logic of a endpoint program which runs
 // as a server-side or client-side of a tunnel respectively.
@@ -24,7 +67,7 @@ type Endpoint struct {
 	network        string
 	serverAddr     string
 	clientAddr     string
-	clientSocksOpt []SocksOpt
+	proxyProto     ProxyProto
 	concurrent     chan struct{}
 	maxAcceptDelay time.Duration
 	done           chan struct{}
@@ -36,7 +79,7 @@ func NewEndpoint(t EndpointType, network, runAddr string, tun Tunnel, opts ...En
 		typ:            t,
 		tunnel:         tun,
 		network:        network,
-		maxAcceptDelay: time.Second, // default 1s
+		maxAcceptDelay: time.Second,
 		done:           make(chan struct{}),
 	}
 	switch t {
@@ -50,6 +93,9 @@ func NewEndpoint(t EndpointType, network, runAddr string, tun Tunnel, opts ...En
 
 	for _, opt := range opts {
 		opt(obj)
+	}
+	if obj.proxyProto == nil {
+		obj.proxyProto = NewSocksV5ProxyProto("", "")
 	}
 	return obj, nil
 }
@@ -78,9 +124,9 @@ func WithEndpointMaxAcceptDelay(delay time.Duration) EndpointOpt {
 	}
 }
 
-func WithEndpointClientSocksOpt(opt ...SocksOpt) EndpointOpt {
+func WithEndpointProxyProto(pp ProxyProto) EndpointOpt {
 	return func(e *Endpoint) {
-		e.clientSocksOpt = opt
+		e.proxyProto = pp
 	}
 }
 
@@ -223,17 +269,17 @@ func (e *Endpoint) serveClient(ctx context.Context) (err error) {
 				e.exitWg.Done()
 			}()
 
-			sp := NewSocksProcessor(lc, e.clientSocksOpt...)
-			if err = sp.Process(c); err != nil {
+			target, err := e.proxyProto(c, lc)
+			if err != nil {
 				return
 			}
-			target := sp.RequestAddr.String()
 
 			rc, err := e.tunnel.Dial(c, e.network, target)
 			if err != nil {
 				return
 			}
 			defer rc.Close()
+
 			LogInfo(c, "client endpoint relay: %s <=> {%s | %s} <=> %s",
 				lc.RemoteAddr(), lc.LocalAddr(), rc.LocalAddr(), rc.RemoteAddr())
 			err = Relay(lc, rc)
