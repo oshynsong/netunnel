@@ -585,7 +585,18 @@ func (s *SocksProcessor) Command(ctx context.Context, cmd byte) error {
 
 func (s *SocksProcessor) clienCommend(ctx context.Context, cmd byte) error {
 	// 1. send cmd request.
-	req := s.buildRequest(cmd)
+	var reqType byte
+	switch cmd {
+	case SocksCmdConnect:
+		reqType = socksReqCmdConnect
+	case SocksCmdBind:
+		reqType = socksReqCmdBind
+	case SocksCmdUDPAssociate:
+		reqType = socksReqCmdUDPAssociate
+	default:
+		return fmt.Errorf("client-side: command %d not supported", cmd)
+	}
+	req := s.buildRequest(reqType)
 	if req == nil {
 		return fmt.Errorf("client-side: build cmd request nil")
 	}
@@ -595,11 +606,13 @@ func (s *SocksProcessor) clienCommend(ctx context.Context, cmd byte) error {
 	LogDebug(ctx, "SocksProcessor.Command: client-side send cmd request %x", req)
 
 	// 2. recv cmd reply and check result.
-	var buf [2]byte
-	if _, err := io.ReadFull(s.ReadWriter, buf[:]); err != nil {
+	_, max := s.ResponseAddr.LengthRange()
+	buf := make([]byte, 3+max)
+	n, err := s.Read(buf)
+	if err != nil {
 		return fmt.Errorf("client-side: recv cmd reply error: %w", err)
 	}
-	LogDebug(ctx, "SocksProcessor.Connect: client-side recv connect reply %x", buf)
+	LogDebug(ctx, "SocksProcessor.Connect: client-side recv connect reply %x", buf[:n])
 	if (buf[0] == SocksV4 && buf[1] == socks4ConnectSuccess) ||
 		(buf[0] == SocksV5 && buf[1] == socksReserveByte) {
 		return nil
@@ -619,6 +632,9 @@ func (s *SocksProcessor) Process(ctx context.Context, cmd ...byte) (err error) {
 	var c byte
 	if len(cmd) > 0 {
 		c = cmd[0]
+	}
+	if s.version == SocksV4 {
+		c = SocksCmdConnect
 	}
 	return s.Command(ctx, c)
 }

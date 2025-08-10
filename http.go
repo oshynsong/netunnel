@@ -8,13 +8,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
 const (
 	HttpProxyDefaultVersion   = "HTTP/1.1"
 	HttpProxyConnectedMessage = "Connection Established"
-	HttpProxyAuthorization    = "Proxy-Authorization"
+	HttpProxyAuthHeaderKey    = "Proxy-Authorization"
+	HttpProxyAuthBasicPrefix  = "Basic "
 )
 
 // Supported two http proxy authentication method.
@@ -83,14 +85,15 @@ func (h *HttpProcessor) Process(ctx context.Context) (err error) {
 	defer func() {
 		statusCode, statusText := http.StatusOK, HttpProxyConnectedMessage
 		if err != nil {
+			LogError(ctx, "HttpProcessor: process failed: %v", err)
 			statusCode = http.StatusProxyAuthRequired
 			statusText = http.StatusText(http.StatusProxyAuthRequired)
 		}
 
 		ret := fmt.Sprintf("%s %d %s\r\n\r\n", h.version, statusCode, statusText)
-		LogInfo(ctx, "HttpProcessor: server-side send response %s", ret)
+		LogInfo(ctx, "HttpProcessor: server-side send response\n%s", ret)
 		if _, we := io.WriteString(h.ReadWriter, ret); we != nil {
-			err = fmt.Errorf("server-side process got err=%v, and send response failed: %w", err, we)
+			err = fmt.Errorf("server-side process got err: %v, and send response failed: %w", err, we)
 		}
 	}()
 
@@ -99,6 +102,7 @@ func (h *HttpProcessor) Process(ctx context.Context) (err error) {
 	if err != nil {
 		return fmt.Errorf("server-side read raw request error %w", err)
 	}
+	LogDebug(ctx, "server-side got request:\n%s", string(h.buf[:n]))
 	reader := bufio.NewReader(bytes.NewReader(h.buf[:n]))
 	req, err := http.ReadRequest(reader)
 	if err != nil {
@@ -108,7 +112,7 @@ func (h *HttpProcessor) Process(ctx context.Context) (err error) {
 		return fmt.Errorf("server-side got invalid proxy request method: %s", req.Method)
 	}
 	if h.authMethod == HttpProxyAuthBasic {
-		proxyAuth := req.Header.Get(HttpProxyAuthorization)
+		proxyAuth := req.Header.Get(HttpProxyAuthHeaderKey)
 		user, pass, ok := h.decodeProxyBasicAuth(proxyAuth)
 		if !ok {
 			return fmt.Errorf("server-side no basic auth given")
@@ -122,24 +126,25 @@ func (h *HttpProcessor) Process(ctx context.Context) (err error) {
 	return nil
 }
 
-func (h *HttpProcessor) clientProcess(ctx context.Context) error {
-	req, err := http.NewRequest(http.MethodConnect, h.RequestAddr, nil)
-	if err != nil {
-		return fmt.Errorf("client-side create new request failed %w", err)
+func (h *HttpProcessor) clientProcess(ctx context.Context) (err error) {
+	req := &http.Request{
+		Method: http.MethodConnect,
+		URL:    &url.URL{Host: h.RequestAddr},
+		Host:   h.RequestAddr,
+		Proto:  h.version,
+		Header: make(http.Header),
 	}
-	req.Proto = h.version
-	req.Header.Add("Host", h.RequestAddr)
 	req.Header.Add("Proxy-Connection", "Keep-Alive")
 	req.Header.Add("Content-Length", "0")
 	if h.authMethod == HttpProxyAuthBasic {
-		req.Header.Add(HttpProxyAuthorization, h.encodeProxyBasicAuth())
+		req.Header.Add(HttpProxyAuthHeaderKey, h.encodeProxyBasicAuth())
 	}
 
-	buf := bytes.NewBuffer(h.buf)
+	buf := bytes.NewBuffer(h.buf[:0])
 	if err := req.WriteProxy(buf); err != nil {
 		return fmt.Errorf("client-side build request error %w", err)
 	}
-	LogInfo(ctx, "HttpProcessor: client-side send request %s", buf.String())
+	LogInfo(ctx, "HttpProcessor: client-side send request with length=%d\n%s", buf.Len(), buf.String())
 	if _, err = h.Write(buf.Bytes()); err != nil {
 		return fmt.Errorf("client-side send request error %w", err)
 	}
@@ -152,17 +157,19 @@ func (h *HttpProcessor) clientProcess(ctx context.Context) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("client-side process failed with %v", resp.StatusCode)
 	}
-	LogInfo(ctx, "HttpProcessor: client-side process success with addr %s", h.RequestAddr)
+	LogInfo(ctx, "HttpProcessor: client-side process success(%v/%v) with addr=%s",
+		resp.StatusCode, http.StatusText(resp.StatusCode), h.RequestAddr)
 	return nil
 }
 
 func (h *HttpProcessor) encodeProxyBasicAuth() string {
 	auth := h.basicUser + ":" + h.basicPass
-	return base64.StdEncoding.EncodeToString([]byte(auth))
+	val := base64.StdEncoding.EncodeToString([]byte(auth))
+	return HttpProxyAuthBasicPrefix + val
 }
 
 func (h *HttpProcessor) decodeProxyBasicAuth(auth string) (username, password string, ok bool) {
-	const prefix = "Basic "
+	prefix := HttpProxyAuthBasicPrefix
 	if len(auth) < len(prefix) || !strings.EqualFold(auth[:len(prefix)], prefix) {
 		return "", "", false
 	}

@@ -2,6 +2,9 @@ package netunnel
 
 import (
 	"bytes"
+	"context"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -39,4 +42,61 @@ func TestSocksAddr(t *testing.T) {
 	assert.Nil(t, err)
 	assert.True(t, bytes.Equal(sa, nsa))
 	t.Logf("%x <=> %x", []byte(sa), []byte(nsa))
+
+	portNumber := sa.PortNumber()
+	min, max := sa.LengthRange()
+	assert.True(t, portNumber == 443)
+	assert.True(t, min == 7)
+	assert.True(t, max == 259)
+	t.Logf("%v %v %v", sa.PortNumber(), min, max)
+}
+
+func TestSocksProcessorV4(t *testing.T) {
+	clientConn, serverConn := NewMemConn("localhost")
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	clientV4 := NewSocksProcessor(clientConn, WithSocksClientSide(), WithSocksVersion(SocksV4))
+	serverV4 := NewSocksProcessor(serverConn, WithSocksVersion(SocksV4))
+	assert.NotNil(t, clientV4)
+	assert.NotNil(t, serverV4)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		clientV4.RequestAddr, _ = NewSocksAddrString("127.0.0.1:1234")
+		fmt.Println("clientV4:", clientV4.Process(context.TODO()))
+	}()
+	go func() {
+		defer wg.Done()
+		fmt.Println("serverV4:", serverV4.Process(context.TODO()))
+	}()
+	wg.Wait()
+}
+
+func TestSocksProcessorV5(t *testing.T) {
+	user, pass := "admin", "123456"
+	clientConn, serverConn := NewMemConn("localhost")
+	defer clientConn.Close()
+	defer serverConn.Close()
+	clientV5 := NewSocksProcessor(clientConn, WithSocksClientSide(), WithSocksVersion(SocksV5),
+		WithSocksAuthMethod([]byte{SocksAuthMethodUserPass}, SocksAuthMethodUserPass), WithSocksAuthUserPass(user, pass))
+	serverV5 := NewSocksProcessor(serverConn, WithSocksVersion(SocksV5),
+		WithSocksAuthMethod([]byte{SocksAuthMethodUserPass}, SocksAuthMethodUserPass), WithSocksAuthUserPass(user, pass))
+	assert.NotNil(t, clientV5)
+	assert.NotNil(t, serverV5)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		clientV5.RequestAddr, _ = NewSocksAddrString("127.0.0.1:1234")
+		fmt.Println("clientV5:", clientV5.Process(context.TODO(), SocksCmdConnect))
+	}()
+	go func() {
+		defer wg.Done()
+		fmt.Println("serverV5:", serverV5.Process(context.TODO()))
+	}()
+	wg.Wait()
 }
