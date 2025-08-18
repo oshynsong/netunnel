@@ -502,7 +502,7 @@ func (s *SocksProcessor) clientAuthenticate(ctx context.Context) error {
 // Command performs the cmd socks request procedure of both sides.
 func (s *SocksProcessor) Command(ctx context.Context, cmd byte) error {
 	if s.isClient {
-		return s.clienCommend(ctx, cmd)
+		return s.clientCommend(ctx, cmd)
 	}
 
 	// 1. recv cmd request from client, check fields and parse addr.
@@ -583,7 +583,7 @@ func (s *SocksProcessor) Command(ctx context.Context, cmd byte) error {
 	return nil
 }
 
-func (s *SocksProcessor) clienCommend(ctx context.Context, cmd byte) error {
+func (s *SocksProcessor) clientCommend(ctx context.Context, cmd byte) error {
 	// 1. send cmd request.
 	var reqType byte
 	switch cmd {

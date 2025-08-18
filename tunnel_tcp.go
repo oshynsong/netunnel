@@ -8,20 +8,20 @@ import (
 )
 
 type TCPTunnel struct {
-	clientAddr   string
-	clientHandle net.Conn
-	connTimeout  time.Duration
+	clientAddr  string
+	keepAlive   time.Duration
+	connTimeout time.Duration
 
 	serverAddr    string
 	serverHandle  net.Listener
 	acceptTimeout time.Duration
 
-	transformerMaker func() (Transformer, error)
+	transformerMaker func(key []byte) (Transformer, error)
 }
 
-func NewTCPTunnel(tm func() (Transformer, error), connTm, acceptTm time.Duration) Tunnel {
+func NewTCPTunnel(tm func([]byte) (Transformer, error), connTm, acceptTm time.Duration) Tunnel {
 	if tm == nil {
-		tm = func() (Transformer, error) {
+		tm = func([]byte) (Transformer, error) {
 			return NewNullTransformer(), nil
 		}
 	}
@@ -44,49 +44,24 @@ func (t *TCPTunnel) Open(ctx context.Context, network, remoteAddr string) error 
 		return ErrInvalidNetwork
 	}
 
-	conn, err := net.DialTimeout(network, remoteAddr, t.connTimeout)
-	if err != nil {
-		return err
-	}
-	t.clientHandle = conn
+	//conn, err := net.DialTimeout(network, remoteAddr, t.connTimeout)
+	//if err != nil {
+	//	return err
+	//}
+	// conn.Close()
 	t.serverAddr = remoteAddr
-
-	// Send the remote server addr for the tunnel keepalive connection.
-	transformer, err := t.transformerMaker()
-	if err != nil {
-		return err
-	}
-	tc := NewTunnelConn(ctx, conn, transformer)
-	sa, err := NewSocksAddrString(remoteAddr)
-	if err != nil {
-		return err
-	}
-	if _, err := tc.Write(sa); err != nil {
-		return err
-	}
 	return nil
 }
 
 func (t *TCPTunnel) Close() error {
-	if t.clientHandle != nil {
-		return t.clientHandle.Close()
-	} else if t.serverHandle != nil {
+	if t.serverHandle != nil {
 		return t.serverHandle.Close()
 	}
 	return nil
 }
 
 func (t *TCPTunnel) KeepAlive(ctx context.Context, interval time.Duration) {
-	if t.clientHandle == nil {
-		return
-	}
-	switch realConn := t.clientHandle.(type) {
-	case *net.TCPConn:
-		realConn.SetKeepAlive(true)
-		realConn.SetKeepAlivePeriod(interval)
-	case *net.UDPConn, *net.IPConn:
-		return
-	}
+	t.keepAlive = interval
 }
 
 func (t *TCPTunnel) Dial(ctx context.Context, network, targetAddr string) (*TunnelConn, error) {
@@ -98,8 +73,21 @@ func (t *TCPTunnel) Dial(ctx context.Context, network, targetAddr string) (*Tunn
 	if err != nil {
 		return nil, err
 	}
+	realConn := conn.(*net.TCPConn)
+	realConn.SetKeepAlive(true)
+	realConn.SetKeepAlivePeriod(t.keepAlive)
 
-	transformer, err := t.transformerMaker()
+	LogDebug(ctx, "TCPTunnel.Accept: start to gen session key for %s", targetAddr)
+	sessionKey, keyErr := NewSessionKey(conn, true)
+	if keyErr != nil {
+		return nil, keyErr
+	}
+	if err = sessionKey.Process(ctx); err != nil {
+		return nil, err
+	}
+	LogDebug(ctx, "TCPTunnel.Dial: create session key success for %s", targetAddr)
+
+	transformer, err := t.transformerMaker(sessionKey.Get())
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +126,17 @@ func (t *TCPTunnel) Accept(ctx context.Context) (tc *TunnelConn, targetAddr stri
 		return nil, targetAddr, err
 	}
 
-	transformer, err := t.transformerMaker()
+	LogDebug(ctx, "TCPTunnel.Accept: start to gen session key from %s", conn.RemoteAddr())
+	sessionKey, keyErr := NewSessionKey(conn, false)
+	if keyErr != nil {
+		return nil, targetAddr, keyErr
+	}
+	if err = sessionKey.Process(ctx); err != nil {
+		return nil, targetAddr, err
+	}
+	LogDebug(ctx, "TCPTunnel.Accept: create session key success from %s", conn.RemoteAddr())
+
+	transformer, err := t.transformerMaker(sessionKey.Get())
 	if err != nil {
 		return nil, targetAddr, err
 	}

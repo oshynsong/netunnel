@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"strings"
 	"time"
@@ -24,23 +23,17 @@ FILE, NETUNNEL_SSH_KEY_PASS, NETUNNEL_SSH_AUTH_KEY, NETUNNEL_SSH_USER, NETUNNEL_
 
 The transformer(--trans-name flag) tells how to transform the raw bytes pass through the tunnel. If
 the NULL name is given, no transformation will be performed through the tunnel, otherwise raw bytes
-will be wrapped and unwrapped with the key(--trans-key flag) or password(--trans-pass flag) to pro-
-vide the corresponding secure guarantee. To ensure safety, the key or password can be specified by
-environment varibles NETUNNEL_TRANS_KEY and NETUNNEL_TRANS_PASS.
+will be wrapped and unwrapped with a session key to provide the corresponding secure guarantee.
 `,
 		Run: runRootCmd,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			switch strings.ToUpper(flagTunnelType) {
 			case "TCP":
-				if flagTransformerName != "NULL" && len(flagTransformerKey) == 0 && len(flagTransformerPass) == 0 {
-					return fmt.Errorf("no transformer key or password given for non-NULL transformers")
-				}
 			case "SSH":
 				if len(flagSSHTunnelKeyFile) == 0 {
 					return fmt.Errorf("no key file provided for SSH tunnel")
 				}
 			}
-
 			return nil
 		},
 	}
@@ -51,7 +44,7 @@ environment varibles NETUNNEL_TRANS_KEY and NETUNNEL_TRANS_PASS.
 		Long: `
 As for server-side endpoint, it listens on the server addr(--saddr flag), waits for the client-side
 to dial. A typical setup with required flags will be like follows:
-	netunnel server --saddr x.x.x.x:port --trans-pass xxx
+	netunnel server --saddr x.x.x.x:port
 `,
 		RunE: runServerCmd,
 	}
@@ -66,7 +59,7 @@ as a proxy to wait for applications connecting it, and the proxy protocol(--cpro
 specified with enhanced security guarantee by user/passowrd(--proxy-auth-user/--proxy-auth-pass). To
 ensure safety, the proxy auth user/password can be specified by environment varibles NETUNNEL_PROXY_
 AUTH_USER and NETUNNEL_PROXY_AUTH_PASS. A typical setup with required flag will be like follows:
-	netunnel client --caddr x.x.x.x:port --cproto http1.1 --saddr x.x.x.x:port --trans-pass xxx
+	netunnel client --caddr x.x.x.x:port --cproto http1.1 --saddr x.x.x.x:port
 `,
 		RunE: runClientCmd,
 	}
@@ -79,12 +72,12 @@ var (
 	flagTunnelType     string
 	flagNetwork        string
 	flagServerAddr     string
+	flagKeyFile        string
+	flagClientPubKeys  string
 
 	flagTransformerName    string
 	flagTransConnTimeout   time.Duration
 	flagTransAcceptTimeout time.Duration
-	flagTransformerKey     string
-	flagTransformerPass    string
 
 	flagSSHTunnelUser    string
 	flagSSHTunnelPass    string
@@ -110,14 +103,13 @@ func init() {
 	rootFlags.StringVar(&flagNetwork, "network", "tcp", "specify the netunnel network: tcp/tcp4/tcp6/udp/udp4/udp6/ip")
 	rootFlags.StringVar(&flagServerAddr, "saddr", "", "specify the server-side address")
 	rootCmd.MarkPersistentFlagRequired("saddr")
+	viper.BindEnv("key")
+	rootFlags.StringVar(&flagKeyFile, "key", viper.GetString("key"), "specify the private key file for authentication")
 
 	rootFlags.StringVar(&flagTransformerName, "trans-name", netunnel.AEADNameCHACHA20, "specify the transformer name: "+
 		strings.Join([]string{"NULL", netunnel.AEADNameAES128GCM, netunnel.AEADNameAES256GCM, netunnel.AEADNameCHACHA20}, "/"))
 	rootFlags.DurationVar(&flagTransConnTimeout, "trans-conn-timeout", time.Second*5, "connection timeout at client-side of the tunnel")
 	rootFlags.DurationVar(&flagTransAcceptTimeout, "trans-accept-timeout", time.Second*10, "accept timeout at server-side of the tunnel")
-	viper.BindEnv("trans_key", "trans_pass")
-	rootFlags.StringVar(&flagTransformerKey, "trans-key", viper.GetString("trans_key"), "base64 encoded transformer key")
-	rootFlags.StringVar(&flagTransformerPass, "trans-pass", viper.GetString("trans_pass"), "ascii string transformer password")
 
 	viper.BindEnv("ssh_user", "ssh_pass", "ssh_key_file", "ssh_key_pass", "ssh_auth_key")
 	rootFlags.StringVar(&flagSSHTunnelUser, "ssh-user", viper.GetString("ssh_user"), "username to create the ssh tunnel")
@@ -125,6 +117,10 @@ func init() {
 	rootFlags.StringVar(&flagSSHTunnelKeyFile, "ssh-key-file", viper.GetString("ssh_key_file"), "key file path to create the ssh tunnel")
 	rootFlags.StringVar(&flagSSHTunnelKeyPass, "ssh-key-pass", viper.GetString("ssh_key_pass"), "key password to parse the key file")
 	rootFlags.StringVar(&flagSSHTunnelAuthKey, "ssh-auth-key", viper.GetString("ssh_auth_key"), "authorized public key file for the ssh tunnel server")
+
+	serverFlags := rootCmd.PersistentFlags()
+	viper.BindEnv("client_public_keys")
+	serverFlags.StringVar(&flagClientPubKeys, "client-public-keys", viper.GetString("client_public_keys"), "the file of public keys for all authenticated clients")
 
 	clientFlags := clientCmd.PersistentFlags()
 	clientFlags.StringVar(&flagClientAddr, "caddr", "", "specify the client-side address")
@@ -214,23 +210,13 @@ func createTunnel() (netunnel.Tunnel, error) {
 	tt := strings.ToUpper(flagTunnelType)
 	switch tt {
 	case "TCP":
-		transCreator := func() (netunnel.Transformer, error) {
+		transCreator := func(key []byte) (netunnel.Transformer, error) {
 			name := strings.ToUpper(flagTransformerName)
 			switch name {
 			case "NULL":
 				return netunnel.NewNullTransformer(), nil
 			case netunnel.AEADNameAES128GCM, netunnel.AEADNameAES256GCM, netunnel.AEADNameCHACHA20:
-				if len(flagTransformerKey) > 0 {
-					key, err := base64.StdEncoding.DecodeString(flagTransformerKey)
-					if err != nil {
-						if len(flagTransformerPass) > 0 {
-							netunnel.NewAEADTransformerPassword(name, flagTransformerPass)
-						}
-						return nil, fmt.Errorf("decode transformer key failed: %w", err)
-					}
-					return netunnel.NewAEADTransformer(name, key)
-				}
-				return netunnel.NewAEADTransformerPassword(name, flagTransformerPass)
+				return netunnel.NewAEADTransformer(name, key)
 			}
 			return nil, fmt.Errorf("invalid transformer name: %s", name)
 		}
