@@ -145,7 +145,6 @@ func (e *Endpoint) serveServer(ctx context.Context) (err error) {
 		return fmt.Errorf("server endpoint listen error %w", err)
 	}
 	LogInfo(ctx, "server endpoint listen success at %s", e.serverAddr)
-	defer e.tunnel.Close()
 
 	var acceptDelay time.Duration
 	for {
@@ -168,8 +167,7 @@ func (e *Endpoint) serveServer(ctx context.Context) (err error) {
 				time.Sleep(acceptDelay)
 				continue
 			}
-			LogError(ctx, "server endpoint accept non-timeout error: %v", err)
-			continue
+			return err
 		}
 
 		reqCtx := NewLogID(ctx)
@@ -221,7 +219,6 @@ func (e *Endpoint) serveClient(ctx context.Context) (err error) {
 		return fmt.Errorf("open tunnel error %w", err)
 	}
 	go e.tunnel.KeepAlive(ctx, time.Second*10)
-	defer e.tunnel.Close()
 	LogInfo(ctx, "client endpoint open tunnel success to %s", e.serverAddr)
 
 	var acceptDelay time.Duration
@@ -288,6 +285,9 @@ func (e *Endpoint) serveClient(ctx context.Context) (err error) {
 }
 
 func (e *Endpoint) Close() {
+	if e.tunnel != nil {
+		_ = e.tunnel.Close()
+	}
 	close(e.done)
 	e.exitWg.Wait()
 }

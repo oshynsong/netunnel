@@ -8,10 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func init() {
-	SetLogLevel(LogLevelDebug)
-}
-
 func TestNullTransformer(t *testing.T) {
 	nt := NewNullTransformer()
 	assert.NotNil(t, nt)

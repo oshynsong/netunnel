@@ -162,8 +162,13 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer endpoint.Close()
-	return endpoint.Serve(cmd.Context())
+	go endpoint.Serve(cmd.Context())
+	select {
+	case <-cmd.Context().Done():
+	case <-netunnel.ExitNotify():
+	}
+	endpoint.Close()
+	return nil
 }
 
 func runClientCmd(cmd *cobra.Command, args []string) error {
@@ -196,8 +201,13 @@ func runClientCmd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	defer endpoint.Close()
-	return endpoint.Serve(cmd.Context())
+	go endpoint.Serve(cmd.Context())
+	select {
+	case <-cmd.Context().Done():
+	case <-netunnel.ExitNotify():
+	}
+	endpoint.Close()
+	return nil
 }
 
 func createTunnel() (netunnel.Tunnel, error) {
