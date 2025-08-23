@@ -2,6 +2,8 @@ package netunnel
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"fmt"
 	"sync"
 	"testing"
@@ -14,6 +16,11 @@ func TestSessionKey(t *testing.T) {
 	defer clientConn.Close()
 	defer serverConn.Close()
 
+	pubKey1, priKey1, err := ed25519.GenerateKey(rand.Reader)
+	assert.Nil(t, err)
+	pubKey2, priKey2, err := ed25519.GenerateKey(rand.Reader)
+	assert.Nil(t, err)
+
 	sk1, err1 := NewSessionKey(serverConn, false)
 	assert.Nil(t, err1)
 	assert.NotNil(t, sk1)
@@ -25,11 +32,11 @@ func TestSessionKey(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		fmt.Println(sk1.Process(context.TODO()))
+		fmt.Println(sk1.Process(context.TODO(), priKey1, []ed25519.PublicKey{pubKey2}))
 	}()
 	go func() {
 		defer wg.Done()
-		fmt.Println(sk2.Process(context.TODO()))
+		fmt.Println(sk2.Process(context.TODO(), priKey2, []ed25519.PublicKey{pubKey1}))
 	}()
 	wg.Wait()
 

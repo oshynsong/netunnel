@@ -33,6 +33,8 @@ will be wrapped and unwrapped with a session key to provide the corresponding se
 				if len(flagSSHTunnelKeyFile) == 0 {
 					return fmt.Errorf("no key file provided for SSH tunnel")
 				}
+			default:
+				return fmt.Errorf("tunnel type not supported %s", flagTunnelType)
 			}
 			return nil
 		},
@@ -47,6 +49,12 @@ to dial. A typical setup with required flags will be like follows:
 	netunnel server --saddr x.x.x.x:port
 `,
 		RunE: runServerCmd,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if len(flagServerAddr) == 0 {
+				return fmt.Errorf("server addr is required")
+			}
+			return nil
+		},
 	}
 
 	clientCmd = &cobra.Command{
@@ -62,6 +70,18 @@ AUTH_USER and NETUNNEL_PROXY_AUTH_PASS. A typical setup with required flag will 
 	netunnel client --caddr x.x.x.x:port --cproto http1.1 --saddr x.x.x.x:port
 `,
 		RunE: runClientCmd,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if len(flagServerAddr) == 0 {
+				return fmt.Errorf("server addr is required")
+			}
+			return nil
+		},
+	}
+
+	toolCmd = &cobra.Command{
+		Use:   "tool",
+		Short: "Provide util tools",
+		RunE:  runToolCmd,
 	}
 )
 
@@ -72,8 +92,8 @@ var (
 	flagTunnelType     string
 	flagNetwork        string
 	flagServerAddr     string
-	flagKeyFile        string
-	flagClientPubKeys  string
+	flagPrivateKeyFile string
+	flagPublicKeyFile  string
 
 	flagTransformerName    string
 	flagTransConnTimeout   time.Duration
@@ -89,6 +109,8 @@ var (
 	flagClientProtocol string
 	flagProxyAuthUser  string
 	flagProxyAuthPass  string
+
+	flagToolName string
 )
 
 func init() {
@@ -102,9 +124,9 @@ func init() {
 	rootFlags.StringVar(&flagTunnelType, "type", "tcp", "specify the netunnel type: tcp or ssh")
 	rootFlags.StringVar(&flagNetwork, "network", "tcp", "specify the netunnel network: tcp/tcp4/tcp6/udp/udp4/udp6/ip")
 	rootFlags.StringVar(&flagServerAddr, "saddr", "", "specify the server-side address")
-	rootCmd.MarkPersistentFlagRequired("saddr")
-	viper.BindEnv("key")
-	rootFlags.StringVar(&flagKeyFile, "key", viper.GetString("key"), "specify the private key file for authentication")
+	viper.BindEnv("private_key", "public_key")
+	rootFlags.StringVar(&flagPrivateKeyFile, "private-key", viper.GetString("private_key"), "specify the private key file for authentication")
+	rootFlags.StringVar(&flagPublicKeyFile, "public-key", viper.GetString("public_key"), "the file of public keys for all authenticated clients")
 
 	rootFlags.StringVar(&flagTransformerName, "trans-name", netunnel.AEADNameCHACHA20, "specify the transformer name: "+
 		strings.Join([]string{"NULL", netunnel.AEADNameAES128GCM, netunnel.AEADNameAES256GCM, netunnel.AEADNameCHACHA20}, "/"))
@@ -118,10 +140,6 @@ func init() {
 	rootFlags.StringVar(&flagSSHTunnelKeyPass, "ssh-key-pass", viper.GetString("ssh_key_pass"), "key password to parse the key file")
 	rootFlags.StringVar(&flagSSHTunnelAuthKey, "ssh-auth-key", viper.GetString("ssh_auth_key"), "authorized public key file for the ssh tunnel server")
 
-	serverFlags := rootCmd.PersistentFlags()
-	viper.BindEnv("client_public_keys")
-	serverFlags.StringVar(&flagClientPubKeys, "client-public-keys", viper.GetString("client_public_keys"), "the file of public keys for all authenticated clients")
-
 	clientFlags := clientCmd.PersistentFlags()
 	clientFlags.StringVar(&flagClientAddr, "caddr", "", "specify the client-side address")
 	clientCmd.MarkPersistentFlagRequired("caddr")
@@ -130,8 +148,12 @@ func init() {
 	clientFlags.StringVar(&flagProxyAuthUser, "proxy-auth-user", viper.GetString("proxy_auth_user"), "specify the proxy authenticate username")
 	clientFlags.StringVar(&flagProxyAuthPass, "proxy-auth-pass", viper.GetString("proxy_auth_pass"), "specify the proxy authenticate password")
 
+	toolFlags := toolCmd.PersistentFlags()
+	toolFlags.StringVar(&flagToolName, "name", "", "specify the name of the tool")
+
 	rootCmd.AddCommand(serverCmd)
 	rootCmd.AddCommand(clientCmd)
+	rootCmd.AddCommand(toolCmd)
 }
 
 func runRootCmd(cmd *cobra.Command, args []string) {
@@ -163,7 +185,7 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 	case <-cmd.Context().Done():
 	case <-netunnel.ExitNotify():
 	}
-	endpoint.Close()
+	//endpoint.Close()
 	return nil
 }
 
@@ -202,7 +224,7 @@ func runClientCmd(cmd *cobra.Command, args []string) error {
 	case <-cmd.Context().Done():
 	case <-netunnel.ExitNotify():
 	}
-	endpoint.Close()
+	//endpoint.Close()
 	return nil
 }
 
@@ -220,7 +242,13 @@ func createTunnel() (netunnel.Tunnel, error) {
 			}
 			return nil, fmt.Errorf("invalid transformer name: %s", name)
 		}
-		return netunnel.NewTCPTunnel(transCreator, flagTransConnTimeout, flagTransAcceptTimeout), nil
+		return netunnel.NewTCPTunnel(
+			netunnel.WithTCPTunnelTransformer(transCreator),
+			netunnel.WithTCPTunnelConnTimeout(flagTransConnTimeout),
+			netunnel.WithTCPTunnelAcceptTimeout(flagTransAcceptTimeout),
+			netunnel.WithTCPTunnelPrivateKeyFile(flagPrivateKeyFile),
+			netunnel.WithTCPTunnelPublicKeyFile(flagPublicKeyFile),
+		)
 	case "SSH":
 		return netunnel.NewSSHTunnel(
 			netunnel.WithSSHTunnelUser(flagSSHTunnelUser),
@@ -231,4 +259,15 @@ func createTunnel() (netunnel.Tunnel, error) {
 		), nil
 	}
 	return nil, fmt.Errorf("tunnel type not supported: %v", flagTunnelType)
+}
+
+func runToolCmd(cmd *cobra.Command, args []string) error {
+	name := strings.ToUpper(flagToolName)
+	switch name {
+	case "GEN-AUTH-KEY":
+		public, private := netunnel.GenAuthKey()
+		fmt.Printf("public:\n%s\n", public)
+		fmt.Printf("private:\n%s\n", private)
+	}
+	return nil
 }

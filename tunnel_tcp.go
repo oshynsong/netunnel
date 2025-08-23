@@ -1,8 +1,14 @@
 package netunnel
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
+	"fmt"
 	"net"
+	"os"
 	"strings"
 	"time"
 )
@@ -17,38 +23,98 @@ type TCPTunnel struct {
 	acceptTimeout time.Duration
 
 	transformerMaker func(key []byte) (Transformer, error)
+	privateKeyFile   string
+	publicKeyFile    string
+	authPrivateKey   ed25519.PrivateKey
+	authPublicKeys   []ed25519.PublicKey
 }
 
-func NewTCPTunnel(tm func([]byte) (Transformer, error), connTm, acceptTm time.Duration) Tunnel {
-	if tm == nil {
-		tm = func([]byte) (Transformer, error) {
+type TCPTunnelOpt = func(*TCPTunnel)
+
+func WithTCPTunnelTransformer(tm func(key []byte) (Transformer, error)) TCPTunnelOpt {
+	return func(t *TCPTunnel) {
+		t.transformerMaker = tm
+	}
+}
+
+func WithTCPTunnelConnTimeout(d time.Duration) TCPTunnelOpt {
+	return func(t *TCPTunnel) {
+		t.connTimeout = d
+	}
+}
+
+func WithTCPTunnelAcceptTimeout(d time.Duration) TCPTunnelOpt {
+	return func(t *TCPTunnel) {
+		t.acceptTimeout = d
+	}
+}
+
+func WithTCPTunnelPrivateKeyFile(k string) TCPTunnelOpt {
+	return func(t *TCPTunnel) {
+		t.privateKeyFile = k
+	}
+}
+
+func WithTCPTunnelPublicKeyFile(k string) TCPTunnelOpt {
+	return func(t *TCPTunnel) {
+		t.publicKeyFile = k
+	}
+}
+
+func NewTCPTunnel(opts ...TCPTunnelOpt) (Tunnel, error) {
+	t := &TCPTunnel{}
+	for _, opt := range opts {
+		opt(t)
+	}
+	if t.transformerMaker == nil {
+		t.transformerMaker = func([]byte) (Transformer, error) {
 			return NewNullTransformer(), nil
 		}
 	}
-	tt := &TCPTunnel{
-		connTimeout:      connTm,
-		acceptTimeout:    acceptTm,
-		transformerMaker: tm,
+	if t.connTimeout == 0 {
+		t.connTimeout = defaultTunnelConnTimeout
 	}
-	if tt.connTimeout == 0 {
-		tt.connTimeout = defaultTunnelConnTimeout
+	if t.acceptTimeout == 0 {
+		t.acceptTimeout = defaultTunnelAcceptTimeout
 	}
-	if tt.acceptTimeout == 0 {
-		tt.acceptTimeout = defaultTunnelAcceptTimeout
+
+	// Parse private key with hex encoded string.
+	rawBytes, err := os.ReadFile(t.privateKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("read private key file error: %w", err)
 	}
-	return tt
+	rawBytes, err = hex.DecodeString(string(rawBytes))
+	if err != nil || len(rawBytes) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("decode private key error: %w, size=%d", err, len(rawBytes))
+	}
+	t.authPrivateKey = ed25519.PrivateKey(rawBytes)
+	LogInfo(context.Background(), "TCPTunnel: parse private key %d bytes success", len(rawBytes))
+
+	// Parse multiple public keys with hex encoded string each line.
+	raw, err := os.ReadFile(t.publicKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("read public key file error: %w", err)
+	}
+	bs := bufio.NewScanner(bytes.NewReader(raw))
+	for bs.Scan() {
+		raw, err = hex.DecodeString(bs.Text())
+		if err != nil || len(raw) != ed25519.PublicKeySize {
+			LogError(context.Background(), "TCPTunnel: parse public key failed %v, size=%d", err, len(raw))
+			continue
+		}
+		t.authPublicKeys = append(t.authPublicKeys, ed25519.PublicKey(raw))
+	}
+	if len(t.authPublicKeys) == 0 {
+		return nil, fmt.Errorf("no auth public key given")
+	}
+	LogInfo(context.Background(), "TCPTunnel: parse %d public keys success", len(t.authPublicKeys))
+	return t, nil
 }
 
 func (t *TCPTunnel) Open(ctx context.Context, network, remoteAddr string) error {
 	if !strings.Contains(network, "tcp") {
 		return ErrInvalidNetwork
 	}
-
-	//conn, err := net.DialTimeout(network, remoteAddr, t.connTimeout)
-	//if err != nil {
-	//	return err
-	//}
-	// conn.Close()
 	t.serverAddr = remoteAddr
 	return nil
 }
@@ -82,7 +148,7 @@ func (t *TCPTunnel) Dial(ctx context.Context, network, targetAddr string) (*Tunn
 	if keyErr != nil {
 		return nil, keyErr
 	}
-	if err = sessionKey.Process(ctx); err != nil {
+	if err = sessionKey.Process(ctx, t.authPrivateKey, t.authPublicKeys); err != nil {
 		return nil, err
 	}
 	LogDebug(ctx, "TCPTunnel.Dial: create session key success for %s", targetAddr)
@@ -131,7 +197,7 @@ func (t *TCPTunnel) Accept(ctx context.Context) (tc *TunnelConn, targetAddr stri
 	if keyErr != nil {
 		return nil, targetAddr, keyErr
 	}
-	if err = sessionKey.Process(ctx); err != nil {
+	if err = sessionKey.Process(ctx, t.authPrivateKey, t.authPublicKeys); err != nil {
 		return nil, targetAddr, err
 	}
 	LogDebug(ctx, "TCPTunnel.Accept: create session key success from %s", conn.RemoteAddr())
