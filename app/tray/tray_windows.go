@@ -21,6 +21,10 @@ func (s *service) Run() { s.impl.Run() }
 
 func (s *service) Quit() { s.impl.Quit() }
 
+func (s *service) OnExit() <-chan struct{} { return s.OnExit() }
+
+func (s *service) OnMainWindow() <-chan struct{} { return s.OnMainWindow() }
+
 func (s *service) UpsertMenuItem(items ...*menu.Item) error {
 	for _, item := range items {
 		err := s.impl.UpsertMenuItem(item.ID(), item.ParentID(), item.Title, item.Disabled, item.Checked)

@@ -45,8 +45,9 @@ type Instance struct {
 	wmSystrayMessage uint32
 	wmTaskbarCreated uint32
 
-	onExit   func()
-	quitOnce sync.Once
+	quitOnce     sync.Once
+	onExit       chan struct{}
+	onMainWindow chan struct{}
 }
 
 // New creates a windows tray program instance.
@@ -59,6 +60,8 @@ func New(name string, icon []byte) (*Instance, error) {
 		menuItemIcons:    make(map[uint32]windows.Handle),
 		visibleItems:     make(map[uint32][]uint32),
 		wmSystrayMessage: WM_USER + 1,
+		onExit:           make(chan struct{}),
+		onMainWindow:     make(chan struct{}),
 	}
 
 	taskbarEventNamePtr, _ := syscall.UTF16PtrFromString("TaskbarCreated")
@@ -174,7 +177,9 @@ func (s *Instance) Quit() {
 	})
 }
 
-func (s *Instance) SetHandlerOnExit(handler func()) { s.onExit = handler }
+func (s *Instance) OnExit() <-chan struct{} { return s.onExit }
+
+func (s *Instance) OnMainWindow() <-chan struct{} { return s.onMainWindow }
 
 func (s *Instance) messageLoop() {
 	slog.Debug("start running event handling loop")
@@ -219,6 +224,7 @@ func (s *Instance) messageHandler(hWnd windows.Handle, message uint32, wParam, l
 		WM_LBUTTONDOWN   = 0x0201
 		WM_LBUTTONUP     = 0x0202
 		WM_LBUTTONDBLCLK = 0x0203
+		WM_RBUTTONDOWN   = 0x0204
 		WM_RBUTTONUP     = 0x0205
 	)
 	switch message {
@@ -241,6 +247,7 @@ func (s *Instance) messageHandler(hWnd windows.Handle, message uint32, wParam, l
 		if err = s.wcex.Unregister(); err != nil {
 			slog.Error(fmt.Sprintf("failed to unregister window %s", err))
 		}
+		slog.Info(fmt.Sprintf("closed: DestroyWindow=%v Unregister=%v", boolRet, err))
 	case WM_DESTROY:
 		// same as WM_ENDSESSION, but throws 0 exit code after all
 		defer pPostQuitMessage.Call(uintptr(int32(0)))
@@ -251,17 +258,19 @@ func (s *Instance) messageHandler(hWnd windows.Handle, message uint32, wParam, l
 			slog.Info(fmt.Sprintf("end session to delete notify icon data: %v", s.nid.Delete()))
 		}
 		s.muNID.Unlock()
-		if s.onExit != nil {
-			s.onExit()
+		select {
+		case s.onExit <- struct{}{}:
+		default:
 		}
 	case s.wmSystrayMessage:
 		switch lParam {
-		case WM_MOUSEMOVE, WM_LBUTTONDOWN: // ignore these messages
-		case WM_LBUTTONUP, WM_LBUTTONDBLCLK:
-			//err := s.showMainWindow()
-			//if err != nil {
-			//	slog.Error(fmt.Sprintf("failed to show main window: %s", err))
-			//}
+		case WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_RBUTTONDOWN: // ignore these messages
+		case WM_LBUTTONUP, WM_LBUTTONDBLCLK: // show main window event
+			select {
+			case s.onMainWindow <- struct{}{}:
+			default:
+			}
+			slog.Info("got show main window event")
 		case WM_RBUTTONUP:
 			err := s.showMainMenu()
 			if err != nil {
