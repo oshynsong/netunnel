@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -222,6 +223,10 @@ func handleClientEvent(start bool) error {
 			netunnel.WithEndpointServerAddr(serverAddr),
 			netunnel.WithEndpointProxyProto(pp),
 		)
+		if err != nil {
+			return err
+		}
+		go clientEndpoint.Serve(context.Background())
 	} else {
 		clientEndpoint.Close()
 		clientEndpoint = nil
