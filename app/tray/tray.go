@@ -20,11 +20,11 @@ func New(name string, icon []byte) (Service, error) {
 type Service interface {
 	Run()
 	Quit()
-	OnExit() <-chan struct{}
-	OnMainWindow() <-chan struct{}
+	OnClicked() <-chan struct{}
 
 	UpsertMenuItem(items ...*menu.Item) error
 	ShowMenuItem(item *menu.Item) error
 	HideMenuItem(item *menu.Item) error
 	AddSeperator() error
+	ShowMainWindow()
 }

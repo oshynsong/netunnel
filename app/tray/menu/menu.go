@@ -89,6 +89,16 @@ func (item *Item) AddSubItem(title, tooltip string) *Item {
 	return newItem(title, tooltip, item)
 }
 
+func (item *Item) WithChecked() *Item {
+	item.Checked = true
+	return item
+}
+
+func (item *Item) WithDisabled() *Item {
+	item.Disabled = true
+	return item
+}
+
 func (item *Item) String() string {
 	if item.parent == nil {
 		return fmt.Sprintf("MenuItem[%d, %q]", item.id, item.Title)

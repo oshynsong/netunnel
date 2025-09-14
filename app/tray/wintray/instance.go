@@ -16,9 +16,8 @@ import (
 
 // Instance stands for an tray program in windows platform.
 type Instance struct {
-	instance, icon, cursor, window windows.Handle
-	name                           string
-
+	window         windows.Handle
+	name           string
 	loadedImages   map[string]windows.Handle
 	muLoadedImages sync.RWMutex
 
@@ -45,9 +44,10 @@ type Instance struct {
 	wmSystrayMessage uint32
 	wmTaskbarCreated uint32
 
-	quitOnce     sync.Once
-	onExit       chan struct{}
-	onMainWindow chan struct{}
+	quitOnce  sync.Once
+	closed    chan struct{}
+	onExit    chan struct{} // event for exit the tray program
+	onClicked chan struct{} // event for left click/doubleclick of the tray program
 }
 
 // New creates a windows tray program instance.
@@ -60,8 +60,9 @@ func New(name string, icon []byte) (*Instance, error) {
 		menuItemIcons:    make(map[uint32]windows.Handle),
 		visibleItems:     make(map[uint32][]uint32),
 		wmSystrayMessage: WM_USER + 1,
+		closed:           make(chan struct{}),
 		onExit:           make(chan struct{}),
-		onMainWindow:     make(chan struct{}),
+		onClicked:        make(chan struct{}),
 	}
 
 	taskbarEventNamePtr, _ := syscall.UTF16PtrFromString("TaskbarCreated")
@@ -71,7 +72,7 @@ func New(name string, icon []byte) (*Instance, error) {
 	}
 	s.wmTaskbarCreated = uint32(res)
 
-	instanceHandle, _, err := pGetModuleHandle.Call(0)
+	/*instanceHandle, _, err := pGetModuleHandle.Call(0)
 	if instanceHandle == 0 {
 		return nil, fmt.Errorf("get instance module failed: %w", err)
 	}
@@ -133,6 +134,14 @@ func New(name string, icon []byte) (*Instance, error) {
 	pShowWindow.Call(uintptr(s.window), uintptr(SW_HIDE))
 	if ret, _, err := pUpdateWindow.Call(uintptr(s.window)); ret == 0 {
 		slog.Error(fmt.Sprintf("failed to update window: %s", err))
+	}*/
+	s.window, s.wcex, err = s.CreateWindow(CreateWindowParam{
+		Hide:    true,
+		Name:    name,
+		WndProc: s.messageHandler,
+	})
+	if err != nil {
+		return nil, err
 	}
 	s.nid = &NotifyIconData{
 		Wnd:             s.window,
@@ -161,28 +170,120 @@ func New(name string, icon []byte) (*Instance, error) {
 	return s, nil
 }
 
-func (s *Instance) Run() { s.messageLoop() }
+func (s *Instance) Run() {
+	s.RunWindowLoop(s.name, s.window, s.closed)
+}
 
 func (s *Instance) Quit() {
-	s.quitOnce.Do(func() {
-		boolRet, _, err := pPostMessage.Call(
-			uintptr(s.window),
-			WM_CLOSE,
-			0,
-			0,
-		)
-		if boolRet == 0 {
-			slog.Error(fmt.Sprintf("failed to close post message on shutdown %s", err))
-		}
-	})
+	s.quitOnce.Do(func() { s.ExitWindow(s.name, s.window, s.closed) })
 }
 
 func (s *Instance) OnExit() <-chan struct{} { return s.onExit }
 
-func (s *Instance) OnMainWindow() <-chan struct{} { return s.onMainWindow }
+func (s *Instance) OnClicked() <-chan struct{} { return s.onClicked }
 
-func (s *Instance) messageLoop() {
-	slog.Debug("start running event handling loop")
+type WndProc = func(hWnd windows.Handle, message uint32, wParam, lParam uintptr) (lResult uintptr)
+
+type CreateWindowParam struct {
+	Name     string
+	Width    int
+	Height   int
+	Hide     bool
+	IconPath *string
+	Position *Point
+	WndProc  WndProc
+}
+
+func (s *Instance) CreateWindow(p CreateWindowParam) (windows.Handle, *WindowClassEx, error) {
+	instanceHandle, _, err := pGetModuleHandle.Call(0)
+	if instanceHandle == 0 {
+		return 0, nil, fmt.Errorf("get instance module failed: %w", err)
+	}
+	instance := windows.Handle(instanceHandle)
+
+	var (
+		iconHandle windows.Handle
+		iconErr    error
+	)
+	if p.IconPath != nil {
+		iconHandle, iconErr = s.loadIcon(*p.IconPath)
+	} else {
+		icon, _, err := pLoadIcon.Call(0, uintptr(IDI_APPLICATION))
+		if icon == 0 {
+			iconErr = fmt.Errorf("use default icon failed: %w", err)
+		} else {
+			iconHandle = windows.Handle(iconHandle)
+		}
+	}
+	if iconErr != nil {
+		return 0, nil, fmt.Errorf("load icon failed: %w", iconErr)
+	}
+
+	cursorHandle, _, err := pLoadCursor.Call(0, uintptr(IDC_ARROW))
+	if cursorHandle == 0 {
+		return 0, nil, fmt.Errorf("load cursor failed: %w", err)
+	}
+	cursor := windows.Handle(cursorHandle)
+
+	var wHandle windows.Handle
+	var wclass *WindowClassEx
+	className, _ := windows.UTF16PtrFromString(p.Name)
+	windowName, _ := windows.UTF16PtrFromString("")
+	wclass = &WindowClassEx{
+		Style:      CS_HREDRAW | CS_VREDRAW,
+		WndProc:    windows.NewCallback(p.WndProc),
+		Instance:   instance,
+		Icon:       iconHandle,
+		Cursor:     cursor,
+		Background: windows.Handle(6), // (COLOR_WINDOW + 1)
+		ClassName:  className,
+		IconSm:     iconHandle,
+	}
+	if err := wclass.Register(); err != nil {
+		return 0, nil, fmt.Errorf("register window class error: %w", err)
+	}
+
+	x, y := CW_USEDEFAULT, CW_USEDEFAULT
+	if p.Position != nil {
+		x, y = int(p.Position.X), int(p.Position.Y)
+	}
+	if p.Width == 0 || p.Height == 0 {
+		p.Width, p.Height = CW_USEDEFAULT, CW_USEDEFAULT
+	}
+	handle, _, err := pCreateWindowEx.Call(
+		uintptr(0),
+		uintptr(unsafe.Pointer(className)),
+		uintptr(unsafe.Pointer(windowName)),
+		uintptr(WS_OVERLAPPEDWINDOW),
+		uintptr(x),
+		uintptr(y),
+		uintptr(p.Width),
+		uintptr(p.Height),
+		uintptr(0),
+		uintptr(0),
+		uintptr(instance),
+		uintptr(0),
+	)
+	if handle == 0 {
+		return 0, nil, fmt.Errorf("create window failed: %w", err)
+	}
+	wHandle = windows.Handle(handle)
+
+	showMode := SW_NORMAL
+	if p.Hide {
+		showMode = SW_HIDE
+	}
+	pShowWindow.Call(uintptr(wHandle), uintptr(showMode))
+	if ret, _, err := pUpdateWindow.Call(uintptr(wHandle)); ret == 0 {
+		pDestroyWindow.Call(uintptr(wHandle))
+		return 0, nil, fmt.Errorf("failed to update window: %w", err)
+	}
+
+	return wHandle, wclass, nil
+}
+
+func (s *Instance) RunWindowLoop(name string, wHandle windows.Handle, closed chan struct{}) {
+	slog.Info(fmt.Sprintf("[eventloop] start event handling loop for window %s", name))
 	m := &struct {
 		WindowHandle windows.Handle
 		Message      uint32
@@ -195,16 +296,23 @@ func (s *Instance) messageLoop() {
 
 	// The typical message handling procedure for windows events process.
 	for {
-		ret, _, err := pGetMessage.Call(uintptr(unsafe.Pointer(m)), 0, 0, 0)
+		select {
+		case <-closed:
+			slog.Info(fmt.Sprintf("[eventloop] window %s closed", name))
+			return
+		default:
+		}
+		ret, _, err := pGetMessage.Call(uintptr(unsafe.Pointer(m)), uintptr(wHandle), 0, 0)
 
 		// If the function retrieves a message other than WM_QUIT, the return value is nonzero.
 		// If the function retrieves the WM_QUIT message, the return value is zero.
 		// If there is an error, the return value is -1
 		switch int32(ret) {
 		case -1:
-			slog.Error(fmt.Sprintf("get message failure: %v", err))
+			slog.Error(fmt.Sprintf("[eventloop] got message of window %s error: %v", name, err))
 			return
 		case 0:
+			slog.Info(fmt.Sprintf("[eventloop] got message to close window %s", name))
 			return
 		default:
 			pTranslateMessage.Call(uintptr(unsafe.Pointer(m))) //nolint:errcheck
@@ -213,20 +321,17 @@ func (s *Instance) messageLoop() {
 	}
 }
 
-func (s *Instance) messageHandler(hWnd windows.Handle, message uint32, wParam, lParam uintptr) (lResult uintptr) {
-	const (
-		WM_COMMAND    = 0x0111
-		WM_ENDSESSION = 0x0016
-		WM_CLOSE      = 0x0010
-		WM_DESTROY    = 0x0002
-
-		WM_MOUSEMOVE     = 0x0200
-		WM_LBUTTONDOWN   = 0x0201
-		WM_LBUTTONUP     = 0x0202
-		WM_LBUTTONDBLCLK = 0x0203
-		WM_RBUTTONDOWN   = 0x0204
-		WM_RBUTTONUP     = 0x0205
+func (s *Instance) ExitWindow(name string, wHandle windows.Handle, closed chan struct{}) {
+	close(closed)
+	boolRet, _, err := pPostMessage.Call(
+		uintptr(wHandle), WM_CLOSE, 0, 0,
 	)
+	if boolRet == 0 {
+		slog.Error(fmt.Sprintf("failed to close window %s on shutdown %s", name, err))
+	}
+}
+
+func (s *Instance) messageHandler(hWnd windows.Handle, message uint32, wParam, lParam uintptr) (lResult uintptr) {
 	switch message {
 	case WM_COMMAND:
 		item := menu.Get(uint32(wParam))
@@ -265,9 +370,9 @@ func (s *Instance) messageHandler(hWnd windows.Handle, message uint32, wParam, l
 	case s.wmSystrayMessage:
 		switch lParam {
 		case WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_RBUTTONDOWN: // ignore these messages
-		case WM_LBUTTONUP, WM_LBUTTONDBLCLK: // show main window event
+		case WM_LBUTTONUP: // show main window event
 			select {
-			case s.onMainWindow <- struct{}{}:
+			case s.onClicked <- struct{}{}:
 			default:
 			}
 			slog.Info("got show main window event")
