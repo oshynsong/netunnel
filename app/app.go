@@ -11,9 +11,9 @@ import (
 	"syscall"
 
 	"github.com/oshynsong/netunnel"
-	"github.com/oshynsong/netunnel/app/assets"
 	"github.com/oshynsong/netunnel/app/tray"
 	"github.com/oshynsong/netunnel/app/tray/menu"
+	"github.com/oshynsong/netunnel/statics"
 )
 
 const (
@@ -24,7 +24,7 @@ const (
 )
 
 func AppRun() {
-	iconBytes, err := assets.GetIcon(iconName)
+	iconBytes, err := statics.Get(iconName)
 	if err != nil {
 		slog.Error(fmt.Sprintf("get app icon failed: %v", err))
 		return
@@ -205,12 +205,12 @@ func handleClientEvent(start bool) error {
 		var pp netunnel.ProxyProto
 		cproto := strings.ToUpper(proxyProto)
 		switch cproto {
-		case "SOCKSV4":
+		case netunnel.ProxyTypeSocks4:
 			pp = netunnel.NewSocksV4ProxyProto()
-		case "SOCKSV5":
+		case netunnel.ProxyTypeSocks5:
 			pp = netunnel.NewSocksV5ProxyProto("", "")
-		case "HTTP1.1":
-			pp = netunnel.NewHttp11ProxyProto("", "")
+		case netunnel.ProxyTypeHttp:
+			pp = netunnel.NewHttpProxyProto("", "")
 		}
 
 		clientEndpoint, err = netunnel.NewEndpoint(
@@ -218,8 +218,8 @@ func handleClientEvent(start bool) error {
 			"tcp",
 			localProxyAddr,
 			tunnel,
-			//netunnel.WithEndpointConcurrent(flagConcurrent),
-			//netunnel.WithEndpointMaxAcceptDelay(flagAcceptMaxDelay),
+			// netunnel.WithEndpointConcurrent(flagConcurrent),
+			// netunnel.WithEndpointMaxAcceptDelay(flagAcceptMaxDelay),
 			netunnel.WithEndpointServerAddr(serverAddr),
 			netunnel.WithEndpointProxyProto(pp),
 		)
@@ -257,8 +257,8 @@ func createTunnel() (netunnel.Tunnel, error) {
 		}
 		return netunnel.NewTCPTunnel(
 			netunnel.WithTCPTunnelTransformer(transCreator),
-			//netunnel.WithTCPTunnelConnTimeout(flagTransConnTimeout),
-			//netunnel.WithTCPTunnelAcceptTimeout(flagTransAcceptTimeout),
+			// netunnel.WithTCPTunnelConnTimeout(flagTransConnTimeout),
+			// netunnel.WithTCPTunnelAcceptTimeout(flagTransAcceptTimeout),
 			netunnel.WithTCPTunnelPrivateKeyFile(private),
 			netunnel.WithTCPTunnelPublicKeyFile(publics),
 		)

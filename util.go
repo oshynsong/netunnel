@@ -10,8 +10,20 @@ import (
 	"time"
 )
 
+const (
+	TypeTCP = "TCP"
+	TypeSSH = "SSH"
+)
+
+const (
+	ProxyTypeHttp   = "HTTP"
+	ProxyTypeSocks5 = "SOCKS5"
+	ProxyTypeSocks4 = "SOCKS4"
+)
+
 var (
 	ErrUnknown                = errors.New("netunnel: unknown error")
+	ErrNotImplemented         = errors.New("netunnel: not implemented")
 	ErrInvalidTransformerName = errors.New("netunnel: invalid transformer name")
 	ErrKeySizeError           = errors.New("netunnel: key size error")
 	ErrSaltCorrupt            = errors.New("netunnel: salt corrupt")

@@ -2,12 +2,14 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
-	"github.com/oshynsong/netunnel"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+
+	"github.com/oshynsong/netunnel"
 )
 
 var (
@@ -25,19 +27,7 @@ The transformer(--trans-name flag) tells how to transform the raw bytes pass thr
 the NULL name is given, no transformation will be performed through the tunnel, otherwise raw bytes
 will be wrapped and unwrapped with a session key to provide the corresponding secure guarantee.
 `,
-		Run: runRootCmd,
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			switch strings.ToUpper(flagTunnelType) {
-			case "TCP":
-			case "SSH":
-				if len(flagSSHTunnelKeyFile) == 0 {
-					return fmt.Errorf("no key file provided for SSH tunnel")
-				}
-			default:
-				return fmt.Errorf("tunnel type not supported %s", flagTunnelType)
-			}
-			return nil
-		},
+		RunE: func(cmd *cobra.Command, args []string) error { return cmd.Usage() },
 	}
 
 	serverCmd = &cobra.Command{
@@ -50,10 +40,7 @@ to dial. A typical setup with required flags will be like follows:
 `,
 		RunE: runServerCmd,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			if len(flagServerAddr) == 0 {
-				return fmt.Errorf("server addr is required")
-			}
-			return nil
+			return chainCheck(checkServerAddr, checkKeyFile, checkTunnelType)
 		},
 	}
 
@@ -71,9 +58,16 @@ AUTH_USER and NETUNNEL_PROXY_AUTH_PASS. A typical setup with required flag will 
 `,
 		RunE: runClientCmd,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			if len(flagServerAddr) == 0 {
-				return fmt.Errorf("server addr is required")
-			}
+			return chainCheck(checkServerAddr, checkKeyFile, checkTunnelType, checkClientAddr, checkClientProtocol)
+		},
+	}
+
+	webappCmd = &cobra.Command{
+		Use:   "webapp",
+		Short: "Run the netunnel as an web application server",
+		RunE:  runWebappCmd,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			// return chainCheck(checkServerAddr, checkKeyFile, checkTunnelType, checkClientAddr, checkLocalAddr)
 			return nil
 		},
 	}
@@ -82,35 +76,10 @@ AUTH_USER and NETUNNEL_PROXY_AUTH_PASS. A typical setup with required flag will 
 		Use:   "tool",
 		Short: "Provide util tools",
 		RunE:  runToolCmd,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return chainCheck(checkToolName)
+		},
 	}
-)
-
-var (
-	flagLogLevel       netunnel.LogLevelType
-	flagConcurrent     int
-	flagAcceptMaxDelay time.Duration
-	flagTunnelType     string
-	flagNetwork        string
-	flagServerAddr     string
-	flagPrivateKeyFile string
-	flagPublicKeyFile  string
-
-	flagTransformerName    string
-	flagTransConnTimeout   time.Duration
-	flagTransAcceptTimeout time.Duration
-
-	flagSSHTunnelUser    string
-	flagSSHTunnelPass    string
-	flagSSHTunnelKeyFile string
-	flagSSHTunnelKeyPass string
-	flagSSHTunnelAuthKey string
-
-	flagClientAddr     string
-	flagClientProtocol string
-	flagProxyAuthUser  string
-	flagProxyAuthPass  string
-
-	flagToolName string
 )
 
 func init() {
@@ -121,7 +90,7 @@ func init() {
 	rootFlags.Uint32Var(&flagLogLevel, "log-level", netunnel.LogLevelInfo, "set log output level 1 to 4, bigger value means less")
 	rootFlags.IntVar(&flagConcurrent, "concurrent", 0, "max concurrent goroutine count")
 	rootFlags.DurationVar(&flagAcceptMaxDelay, "accept-max-delay", time.Second, "max delay time when accept error occurs")
-	rootFlags.StringVar(&flagTunnelType, "type", "tcp", "specify the netunnel type: tcp or ssh")
+	rootFlags.StringVar(&flagTunnelType, "type", netunnel.TypeTCP, "specify the netunnel type: TCP or SSH")
 	rootFlags.StringVar(&flagNetwork, "network", "tcp", "specify the netunnel network: tcp/tcp4/tcp6/udp/udp4/udp6/ip")
 	rootFlags.StringVar(&flagServerAddr, "saddr", "", "specify the server-side address")
 	viper.BindEnv("private_key", "public_key")
@@ -142,24 +111,22 @@ func init() {
 
 	clientFlags := clientCmd.PersistentFlags()
 	clientFlags.StringVar(&flagClientAddr, "caddr", "", "specify the client-side address")
-	clientCmd.MarkPersistentFlagRequired("caddr")
-	clientFlags.StringVar(&flagClientProtocol, "cproto", "socksv5", "specify the netunnel client protocol: socksv4, socksv5, http1.1")
+	clientFlags.StringVar(&flagClientProtocol, "cproto", netunnel.ProxyTypeHttp, "specify the netunnel client protocol: "+
+		strings.Join([]string{netunnel.ProxyTypeHttp, netunnel.ProxyTypeSocks5, netunnel.ProxyTypeSocks4}, ", "))
 	viper.BindEnv("proxy_auth_user", "proxy_auth_pass")
 	clientFlags.StringVar(&flagProxyAuthUser, "proxy-auth-user", viper.GetString("proxy_auth_user"), "specify the proxy authenticate username")
 	clientFlags.StringVar(&flagProxyAuthPass, "proxy-auth-pass", viper.GetString("proxy_auth_pass"), "specify the proxy authenticate password")
+
+	webappFlags := webappCmd.PersistentFlags()
+	webappFlags.StringVar(&flagLocalAddr, "local-addr", ":8080", "specify the local address")
 
 	toolFlags := toolCmd.PersistentFlags()
 	toolFlags.StringVar(&flagToolName, "name", "", "specify the name of the tool")
 
 	rootCmd.AddCommand(serverCmd)
 	rootCmd.AddCommand(clientCmd)
+	rootCmd.AddCommand(webappCmd)
 	rootCmd.AddCommand(toolCmd)
-}
-
-func runRootCmd(cmd *cobra.Command, args []string) {
-	if flagLogLevel == netunnel.LogLevelDebug {
-		fmt.Println("netunnel called")
-	}
 }
 
 func runServerCmd(cmd *cobra.Command, args []string) error {
@@ -185,7 +152,7 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 	case <-cmd.Context().Done():
 	case <-netunnel.ExitNotify():
 	}
-	//endpoint.Close()
+	// endpoint.Close()
 	return nil
 }
 
@@ -197,14 +164,16 @@ func runClientCmd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	var proxyProto netunnel.ProxyProto
-	cproto := strings.ToUpper(flagClientProtocol)
-	switch cproto {
-	case "SOCKSV4":
+	proto := strings.ToUpper(flagClientProtocol)
+	switch proto {
+	case netunnel.ProxyTypeSocks4:
 		proxyProto = netunnel.NewSocksV4ProxyProto()
-	case "SOCKSV5":
+	case netunnel.ProxyTypeSocks5:
 		proxyProto = netunnel.NewSocksV5ProxyProto(flagProxyAuthUser, flagProxyAuthPass)
-	case "HTTP1.1":
-		proxyProto = netunnel.NewHttp11ProxyProto(flagProxyAuthUser, flagProxyAuthPass)
+	case netunnel.ProxyTypeHttp:
+		proxyProto = netunnel.NewHttpProxyProto(flagProxyAuthUser, flagProxyAuthPass)
+	default:
+		return fmt.Errorf("invalid proxy protocol: %s", proto)
 	}
 	endpoint, err := netunnel.NewEndpoint(
 		netunnel.EndpointClient,
@@ -224,14 +193,14 @@ func runClientCmd(cmd *cobra.Command, args []string) error {
 	case <-cmd.Context().Done():
 	case <-netunnel.ExitNotify():
 	}
-	//endpoint.Close()
+	// endpoint.Close()
 	return nil
 }
 
 func createTunnel() (netunnel.Tunnel, error) {
 	tt := strings.ToUpper(flagTunnelType)
 	switch tt {
-	case "TCP":
+	case netunnel.TypeTCP:
 		transCreator := func(key []byte) (netunnel.Transformer, error) {
 			name := strings.ToUpper(flagTransformerName)
 			switch name {
@@ -249,7 +218,7 @@ func createTunnel() (netunnel.Tunnel, error) {
 			netunnel.WithTCPTunnelPrivateKeyFile(flagPrivateKeyFile),
 			netunnel.WithTCPTunnelPublicKeyFile(flagPublicKeyFile),
 		)
-	case "SSH":
+	case netunnel.TypeSSH:
 		return netunnel.NewSSHTunnel(
 			netunnel.WithSSHTunnelUser(flagSSHTunnelUser),
 			netunnel.WithSSHTunnelPassword(flagSSHTunnelPass),
@@ -259,6 +228,20 @@ func createTunnel() (netunnel.Tunnel, error) {
 		), nil
 	}
 	return nil, fmt.Errorf("tunnel type not supported: %v", flagTunnelType)
+}
+
+func runWebappCmd(cmd *cobra.Command, args []string) error {
+	public, private := netunnel.GenAuthKey()
+	netunnel.LogInfo(cmd.Context(), "start server with listening on %s: user=%s pass=%s", flagLocalAddr, public, private)
+	mux := createWebappMux(public, private)
+	s := &http.Server{
+		Addr:         flagLocalAddr,
+		Handler:      mux,
+		ReadTimeout:  time.Second * 10,
+		WriteTimeout: time.Second * 10,
+		IdleTimeout:  time.Second * 30,
+	}
+	return s.ListenAndServe()
 }
 
 func runToolCmd(cmd *cobra.Command, args []string) error {

@@ -45,7 +45,7 @@ func NewSocksV5ProxyProto(user, pass string) ProxyProto {
 	}
 }
 
-func NewHttp11ProxyProto(user, pass string) ProxyProto {
+func NewHttpProxyProto(user, pass string) ProxyProto {
 	return func(ctx context.Context, local net.Conn) (addr string, err error) {
 		opts := []HttpOpt{WithHttpVersion(HttpProxyDefaultVersion)}
 		if len(user) != 0 && len(pass) != 0 {

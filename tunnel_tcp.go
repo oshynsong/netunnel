@@ -13,6 +13,7 @@ import (
 	"time"
 )
 
+// TCPTunnel implements a tunnel based on tcp protocol with client and server sides.
 type TCPTunnel struct {
 	clientAddr  string
 	keepAlive   time.Duration
