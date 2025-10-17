@@ -78,8 +78,10 @@ func checkTunnelType() error {
 		if len(flagSSHTunnelUser) == 0 && len(flagSSHTunnelPass) == 0 && len(flagSSHTunnelAuthKey) == 0 {
 			return fmt.Errorf("no user/password and auth key file provided for SSH tunnel")
 		}
+	default:
+		return fmt.Errorf("tunnel type not supported %s", flagTunnelType)
 	}
-	return fmt.Errorf("tunnel type not supported %s", flagTunnelType)
+	return nil
 }
 
 func checkKeyFile() error {

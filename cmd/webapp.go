@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -92,6 +93,30 @@ func webappFaviconHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+var webappHandshake = websocket.Upgrader{
+	HandshakeTimeout: time.Second,
+	ReadBufferSize:   8 * 1024,
+	WriteBufferSize:  8 * 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header["Origin"]
+		if len(origin) == 0 {
+			netunnel.LogError(r.Context(), "missing origin header")
+			return false
+		}
+		u, err := url.Parse(origin[0])
+		if err != nil {
+			netunnel.LogError(r.Context(), "origin header %v parse failed: %v", origin[0], err)
+			return false
+		}
+		if !strings.EqualFold(u.Host, r.Host) {
+			netunnel.LogError(r.Context(), "origin header %s not equal request host %v", u.Host, r.Host)
+			return false
+		}
+		return true
+	},
+	EnableCompression: true,
+}
+
 func webappWSHandler(w http.ResponseWriter, r *http.Request) {
 	// Get the server random key from cookie, which set by the index handler.
 	serverToken, err := r.Cookie(tokenHeaderKey)
@@ -102,52 +127,16 @@ func webappWSHandler(w http.ResponseWriter, r *http.Request) {
 	netunnel.LogInfo(r.Context(), "got server token key: %s", serverToken.Value)
 
 	// Get the client random key to generate the session token.
-	protocols := websocket.Subprotocols(r)
-	if len(protocols) != 2 {
-		netunnel.LogError(r.Context(), "client token key invalid: %v", protocols)
+	clientToken, addr := r.URL.Query().Get("key"), r.URL.Query().Get("addr")
+	if len(clientToken) == 0 || len(addr) == 0 {
+		netunnel.LogError(r.Context(), "client token key or addr invalid")
 		return
 	}
-	addr, clientToken := protocols[0], protocols[1]
-	netunnel.LogInfo(r.Context(), "got client tokenKey=%s addr=%s", clientToken, addr)
-
-	// sessionKey := sha256.Sum256([]byte(serverToken.Value + clientToken))
-	respHeader := make(http.Header)
-	/*tokenCookie := &http.Cookie{
-		Name:     tokenHeaderKey,
-		Value:    hex.EncodeToString(sessionKey[:]),
-		Path:     "/",
-		SameSite: http.SameSiteStrictMode,
-		HttpOnly: true,
-		Secure:   true,
-	}
-	respHeader.Set("Set-Cookie", tokenCookie.String())*/
+	sessionKey := sha256.Sum256([]byte(serverToken.Value + clientToken))
+	netunnel.LogInfo(r.Context(), "got client token=%s addr=%s sessionKey=%x", clientToken, addr, sessionKey)
 
 	// Perform the websocket handshake.
-	var handshakeHandler = websocket.Upgrader{
-		HandshakeTimeout: time.Second,
-		ReadBufferSize:   8 * 1024,
-		WriteBufferSize:  8 * 1024,
-		CheckOrigin: func(r *http.Request) bool {
-			origin := r.Header["Origin"]
-			if len(origin) == 0 {
-				netunnel.LogError(r.Context(), "missing origin header")
-				return false
-			}
-			u, err := url.Parse(origin[0])
-			if err != nil {
-				netunnel.LogError(r.Context(), "origin header %v parse failed: %v", origin[0], err)
-				return false
-			}
-			if !strings.EqualFold(u.Host, r.Host) {
-				netunnel.LogError(r.Context(), "origin header %s not equal request host %v", u.Host, r.Host)
-				return false
-			}
-			return true
-		},
-		EnableCompression: true,
-		Subprotocols:      protocols, // must return the same sub protocols to the client
-	}
-	conn, connErr := handshakeHandler.Upgrade(w, r, respHeader)
+	conn, connErr := webappHandshake.Upgrade(w, r, nil)
 	if connErr != nil {
 		netunnel.LogError(r.Context(), "websocket upgrade failed: %v", connErr)
 		return
@@ -170,33 +159,28 @@ func webappWSHandler(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
-
 	*/
 
+	resp, err := http.DefaultClient.Get(addr)
+	if err != nil {
+		netunnel.LogError(r.Context(), "websocket GET failed: %v", err)
+		return
+	}
+	bodyBytes, _ := io.ReadAll(resp.Body)
+	if err = conn.WriteMessage(websocket.TextMessage, bodyBytes); err != nil {
+		netunnel.LogError(r.Context(), "websocket write failed: %v", err)
+	}
 	for {
-		if err := conn.WriteControl(websocket.PingMessage, []byte("PING"), time.Now().Add(time.Second)); err != nil {
-			netunnel.LogError(r.Context(), "websocket ping failed: %v", err)
-			return
-		}
-		netunnel.LogInfo(r.Context(), "websocket send pong")
-
 		msgType, msg, msgErr := conn.ReadMessage()
 		if msgErr != nil {
 			netunnel.LogError(r.Context(), "websocket read message failed: %v", msgErr)
 			return
 		}
 		netunnel.LogInfo(r.Context(), "websocket read message: type=%v msg=%v", msgType, string(msg))
-		/*if msgType == websocket.PongMessage {
-			now := time.Now()
-			atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(&lastPingWrite)), unsafe.Pointer(&now))
-		}
-		*/
 
-		/*if msgErr = conn.WriteMessage(msgType, msg); msgErr != nil {
+		if msgErr = conn.WriteMessage(msgType, msg); msgErr != nil {
 			netunnel.LogError(r.Context(), "websocket write message failed: %v", msgErr)
 			return
 		}
-
-		*/
 	}
 }

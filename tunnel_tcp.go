@@ -84,6 +84,7 @@ func NewTCPTunnel(opts ...TCPTunnelOpt) (Tunnel, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read private key file error: %w", err)
 	}
+	rawBytes = bytes.TrimSpace(rawBytes)
 	rawBytes, err = hex.DecodeString(string(rawBytes))
 	if err != nil || len(rawBytes) != ed25519.PrivateKeySize {
 		return nil, fmt.Errorf("decode private key error: %w, size=%d", err, len(rawBytes))

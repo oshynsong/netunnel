@@ -13,6 +13,14 @@ import (
 // Tunnel is an abstraction of a network tunnel to build security communication
 // between two endpoints over the unsecure network. It can be divided into the
 // client-side and server-side functions to build program run respectively.
+//
+// The architecture of a tunnel can be modeled as follows:
+//
+//	                        [Open/Dial]    [Listen/Accept]
+//	+-----+      +-------------+  |           |  +-------------+      +--------+
+//	| app | <--> | client-side |  <===Tunnel==>  | server-side | <--> | remote |
+//	+-----+      +-------------+  |           |  +-------------+      +--------+
+//	                        [KeepAlive/Close]
 type Tunnel interface {
 	// Open builds a new connection tunnel from local side to remote side.
 	// Different authentication strategies should be concerned by the specific

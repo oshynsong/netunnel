@@ -99,7 +99,7 @@
             transform: scale(1.1);
         }
 
-        #body {
+        #content {
             top: 40px;
             bottom: 120px;
             left: 0;
@@ -145,7 +145,7 @@
         <div id="go" class="header-box"><div class="icon">☞</div></div>
         <div id="star" class="header-box"><div class="icon-star"></div></div>
     </div>
-    <div id="body"></div>
+    <div id="content"></div>
     <div id="footer"></div>
 <script>
     let GenToken = function () {
@@ -176,32 +176,49 @@
         let node = document.getElementById("address");
         return node.lastChild.value;
     };
-    let Connect = function(addr) {
+    let Fetch = function(addr, ) {
         if (addr.length === 0) {
             LogError("connect addr is empty");
             return null;
         }
         let sessionToken = GenToken();
-        const socket = new WebSocket("ws://localhost:8080/api/ws", [addr, sessionToken])
-        socket.onopen = (event) => {
-            LogInfo("connect to " + addr);
-        };
-        socket.onmessage = (event) => {
-            LogInfo("get message:" + event.data + " " + event.type);
-        };
+        const socket = new WebSocket("ws://localhost:8080/api/ws?key="+sessionToken+"&addr="+addr)
+        socket.onopen = (event) => { LogInfo("connect to " + addr + " success"); };
         socket.onclose = (event) => {
-            LogInfo("connection to "+ addr +" closed: code=" + event.code + " type="+event.type + " reason="+event.reason);
+            LogInfo("fetch "+ addr +" closed: code=" + event.code + " type="+event.type + " reason="+event.reason);
         };
         socket.onerror = (error) => {
-            LogInfo("connection to "+ addr + " got error " + error);
+            LogInfo("fetch "+ addr + " got error " + error);
+        };
+        socket.onmessage = (event) => {
+            LogInfo("fetch " + addr + " got size=" + event.data.length + " type=" + event.type);
+            let content = document.getElementById("content");
+            while (content.firstChild) {
+                content.removeChild(content.firstChild);
+            }
+            content.insertAdjacentHTML("beforeend", event.data);
         };
         return socket;
     };
 
     const documentHandler = function () {
+        const mu = new MutationObserver((mutations)=>{
+            mutations.forEach((mutation) => {
+               mutation.addedNodes.forEach((node) => {
+                  if (node.tag !== "img" && node.tag !== "script" || node.tag !== "style") return;
+                  console.log("got " + node.tag + " of " + node.src);
+               });
+            });
+        });
+        mu.observe(document.getElementById("content"), {
+            childList:         true,
+            subtree:           true,
+            attributes:        true,
+            attributeOldValue: true});
+
         document.getElementById("go").addEventListener("click", function (event) {
             let addr = GetAddress();
-            Connect(addr);
+            Fetch(addr);
         });
     };
     if (document.readyState !== "loading") {
