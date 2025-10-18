@@ -152,7 +152,7 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 	case <-cmd.Context().Done():
 	case <-netunnel.ExitNotify():
 	}
-	// endpoint.Close()
+	endpoint.Close(cmd.Context())
 	return nil
 }
 
@@ -193,7 +193,7 @@ func runClientCmd(cmd *cobra.Command, args []string) error {
 	case <-cmd.Context().Done():
 	case <-netunnel.ExitNotify():
 	}
-	// endpoint.Close()
+	endpoint.Close(cmd.Context())
 	return nil
 }
 

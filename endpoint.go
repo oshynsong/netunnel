@@ -70,6 +70,7 @@ type Endpoint struct {
 	proxyProto     ProxyProto
 	concurrent     chan struct{}
 	maxAcceptDelay time.Duration
+	proxySetting   *ProxySetting
 	done           chan struct{}
 	exitWg         sync.WaitGroup
 }
@@ -191,7 +192,6 @@ func (e *Endpoint) serveServer(ctx context.Context) (err error) {
 				if r := recover(); r != nil {
 					LogError(c, "server endpoiint panic at %s: %v", ac.ID(), r)
 				}
-				LogInfo(c, "server endpoint process finished for %s: %v", ac.ID(), err)
 				e.exitWg.Done()
 			}()
 
@@ -202,7 +202,7 @@ func (e *Endpoint) serveServer(ctx context.Context) (err error) {
 			defer rc.Close()
 			LogInfo(c, "server endpoint relay: %s <=> {%s | %s} <=> %s",
 				ac.RemoteAddr(), ac.LocalAddr(), rc.LocalAddr(), rc.RemoteAddr())
-			err = Relay(ac, rc)
+			err = Relay(c, ac, rc, e.done)
 		}(reqCtx, conn, target)
 	}
 }
@@ -214,6 +214,11 @@ func (e *Endpoint) serveClient(ctx context.Context) (err error) {
 	}
 	LogInfo(ctx, "client endpoint listen success at %s", e.clientAddr)
 	defer listener.Close()
+
+	e.proxySetting, err = SetupProxy(ctx, e.clientAddr)
+	if err != nil {
+		return fmt.Errorf("client endpoint setup proxy failed: %v", err)
+	}
 
 	if err := e.tunnel.Open(ctx, e.network, e.serverAddr); err != nil {
 		return fmt.Errorf("open tunnel error %w", err)
@@ -262,7 +267,6 @@ func (e *Endpoint) serveClient(ctx context.Context) (err error) {
 				if r := recover(); r != nil {
 					LogError(c, "client endpoiint panic for %s: %v", conn.RemoteAddr(), r)
 				}
-				LogInfo(c, "client endpoint process finished for %s: %v", conn.RemoteAddr(), err)
 				e.exitWg.Done()
 			}()
 
@@ -277,16 +281,19 @@ func (e *Endpoint) serveClient(ctx context.Context) (err error) {
 			}
 			defer rc.Close()
 
-			LogInfo(c, "client endpoint relay: %s <=> {%s | %s} <=> %s",
+			LogInfo(c, "client endpoint relay started: %s <=> {%s | %s} <=> %s",
 				lc.RemoteAddr(), lc.LocalAddr(), rc.LocalAddr(), rc.RemoteAddr())
-			err = Relay(lc, rc)
+			err = Relay(c, lc, rc, e.done)
 		}(reqCtx, conn)
 	}
 }
 
-func (e *Endpoint) Close() {
+func (e *Endpoint) Close(ctx context.Context) {
 	if e.tunnel != nil {
 		_ = e.tunnel.Close()
+	}
+	if err := ResetProxy(ctx, e.proxySetting); err != nil {
+		LogError(ctx, "reset proxy failed: %v", err)
 	}
 	close(e.done)
 	e.exitWg.Wait()

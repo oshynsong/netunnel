@@ -1,6 +1,7 @@
 package netunnel
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -38,7 +39,7 @@ func ExitNotify() <-chan os.Signal {
 	return signalChan
 }
 
-func Relay(left, right net.Conn) error {
+func Relay(ctx context.Context, left, right net.Conn, done <-chan struct{}) error {
 	const wait = 10 * time.Second
 
 	errCh := make(chan error)
@@ -53,8 +54,14 @@ func Relay(left, right net.Conn) error {
 		errCh <- err
 	}()
 
-	err := <-errCh
-	if err != nil && !errors.Is(err, os.ErrDeadlineExceeded) {
+	var err error
+	select {
+	case err = <-errCh:
+	case <-done:
+		err = os.ErrClosed
+	}
+	LogInfo(ctx, "relay finished: %s <=> {%s | %s} <=> %s", left.RemoteAddr(), left.LocalAddr(), right.LocalAddr(), right.RemoteAddr())
+	if err != nil && !errors.Is(err, os.ErrDeadlineExceeded) && !errors.Is(err, os.ErrClosed) {
 		return err
 	}
 	return nil
