@@ -3,10 +3,12 @@
 
 package netunnel
 
-func SetupProxy(addrport string) (*ProxySetting, error) {
+import "context"
+
+func SetupProxy(ctx context.Context, addrport string) (*ProxySetting, error) {
 	panic("not implemented")
 }
 
-func ResetProxy(old *ProxySetting) error {
+func ResetProxy(ctx context.Context, old *ProxySetting) error {
 	panic("not implemented")
 }
