@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 )
 
 var (
+	flagDaemonize      bool
 	flagLogLevel       netunnel.LogLevelType
 	flagConcurrent     int
 	flagAcceptMaxDelay time.Duration
@@ -32,11 +35,25 @@ var (
 	flagClientProtocol string
 	flagProxyAuthUser  string
 	flagProxyAuthPass  string
-
-	flagLocalAddr string
-
-	flagToolName string
+	flagWithRemote     bool
+	flagLocalAddr      string
+	flagToolName       string
 )
+
+func removeDaemonizeFlag() (appName string, subArgs []string) {
+	subArgs = make([]string, 0, len(os.Args)-2)
+	for i, v := range os.Args {
+		if i == 0 {
+			appName = filepath.Base(v)
+			continue
+		}
+		if v == "-d" || v == "--daemonize" {
+			continue
+		}
+		subArgs = append(subArgs, v)
+	}
+	return appName, subArgs
+}
 
 func chainCheck(checks ...func() error) error {
 	for _, check := range checks {

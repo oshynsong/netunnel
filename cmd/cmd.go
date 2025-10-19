@@ -8,8 +8,10 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/oshynsong/netunnel"
+	"github.com/oshynsong/netunnel/daemonize"
 )
 
 var (
@@ -87,6 +89,7 @@ func init() {
 	viper.SetEnvPrefix("NETUNNEL")
 
 	rootFlags := rootCmd.PersistentFlags()
+	rootFlags.BoolVarP(&flagDaemonize, "daemonize", "d", false, "run the service as a daemon")
 	rootFlags.Uint32Var(&flagLogLevel, "log-level", netunnel.LogLevelInfo, "set log output level 1 to 4, bigger value means less")
 	rootFlags.IntVar(&flagConcurrent, "concurrent", 0, "max concurrent goroutine count")
 	rootFlags.DurationVar(&flagAcceptMaxDelay, "accept-max-delay", time.Second, "max delay time when accept error occurs")
@@ -116,6 +119,7 @@ func init() {
 	viper.BindEnv("proxy_auth_user", "proxy_auth_pass")
 	clientFlags.StringVar(&flagProxyAuthUser, "proxy-auth-user", viper.GetString("proxy_auth_user"), "specify the proxy authenticate username")
 	clientFlags.StringVar(&flagProxyAuthPass, "proxy-auth-pass", viper.GetString("proxy_auth_pass"), "specify the proxy authenticate password")
+	clientFlags.BoolVar(&flagWithRemote, "with-remote", false, "setup and reset the remote server")
 
 	webappFlags := webappCmd.PersistentFlags()
 	webappFlags.StringVar(&flagLocalAddr, "local-addr", ":8080", "specify the local address")
@@ -131,6 +135,11 @@ func init() {
 
 func runServerCmd(cmd *cobra.Command, args []string) error {
 	netunnel.SetLogLevel(flagLogLevel)
+	if flagDaemonize {
+		appName, subArgs := removeDaemonizeFlag()
+		cmd.Printf("run %s as a daemon success", appName)
+		return daemonize.Create(appName, subArgs)
+	}
 
 	tunnel, err := createTunnel()
 	if err != nil {
@@ -158,6 +167,43 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 
 func runClientCmd(cmd *cobra.Command, args []string) error {
 	netunnel.SetLogLevel(flagLogLevel)
+	if flagDaemonize {
+		appName, subArgs := removeDaemonizeFlag()
+		cmd.Printf("run %s as a daemon success", appName)
+		return daemonize.Create(appName, subArgs)
+	}
+
+	if flagWithRemote {
+		conf, err := netunnel.BuildSSHClientConfig(
+			flagSSHTunnelUser,
+			flagSSHTunnelPass,
+			flagSSHTunnelKeyFile,
+			flagTransConnTimeout,
+			flagSSHTunnelKeyPass)
+		if err != nil {
+			return err
+		}
+		addr := strings.Split(flagServerAddr, ":")[0] + ":22"
+		client, err := ssh.Dial(flagNetwork, addr, conf)
+		if err != nil {
+			return err
+		}
+		defer client.Close()
+		cmd.Printf("client endpoint setup remote with %s success", addr)
+
+		sess, sessErr := client.NewSession()
+		if sessErr != nil {
+			return sessErr
+		}
+		if _, err = sess.CombinedOutput("sh /root/run.sh"); err != nil {
+			return err
+		}
+		defer func() {
+			if _, err = sess.CombinedOutput("pkill netunnel"); err != nil {
+				cmd.PrintErrf("reset remote failed: %v", err)
+			}
+		}()
+	}
 
 	tunnel, err := createTunnel()
 	if err != nil {

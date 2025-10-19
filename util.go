@@ -3,12 +3,18 @@ package netunnel
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -33,12 +39,14 @@ var (
 	ErrEndpointClosed         = errors.New("netunnel: endpoint closed")
 )
 
+// ExitNotify registers the exit signal handler to the kernel to exit gracefully.
 func ExitNotify() <-chan os.Signal {
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
 	return signalChan
 }
 
+// Relay copies the data stream between given two connections.
 func Relay(ctx context.Context, left, right net.Conn, done <-chan struct{}) error {
 	const wait = 10 * time.Second
 
@@ -64,6 +72,122 @@ func Relay(ctx context.Context, left, right net.Conn, done <-chan struct{}) erro
 	if err != nil && !errors.Is(err, os.ErrDeadlineExceeded) && !errors.Is(err, os.ErrClosed) {
 		return err
 	}
+	return nil
+}
+
+// BuildSSHClientConfig builds the client config to connect remote ssh server.
+func BuildSSHClientConfig(user, password, keyFile string, connTimeout time.Duration, keyPass ...string) (*ssh.ClientConfig, error) {
+	if len(user) == 0 {
+		return nil, fmt.Errorf("no ssh user given")
+	}
+	conf := &ssh.ClientConfig{
+		User:            user,
+		Timeout:         connTimeout,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+	conf.Ciphers = []string{
+		"aes256-gcm@openssh.com", "aes128-gcm@openssh.com",
+		"chacha20-poly1305@openssh.com",
+		"aes128-ctr", "aes192-ctr", "aes256-ctr",
+		"3des-cbc", // add this cipher to keep compatible connecting old version SSH servers
+	}
+	if len(password) != 0 {
+		conf.Auth = append(conf.Auth, ssh.Password(password))
+	} else if len(keyFile) != 0 {
+		signer, err := ParseSSHPrivateKey(keyFile, keyPass...)
+		if err != nil {
+			return nil, err
+		}
+		conf.Auth = append(conf.Auth, ssh.PublicKeys(signer))
+	} else {
+		return nil, fmt.Errorf("no password or private key given")
+	}
+	return conf, nil
+}
+
+// ParseSSHPrivateKey parses the ssh private key from the given file path and
+// the optional passphrase if parse failed without passphrase.
+func ParseSSHPrivateKey(keyFile string, keyPassphrase ...string) (ssh.Signer, error) {
+	privateKeyBytes, err := os.ReadFile(keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("read private key from file(%s) failed: %w", keyFile, err)
+	}
+
+	signer, parseErr := ssh.ParsePrivateKey(privateKeyBytes)
+	if parseErr != nil {
+		_, ok := parseErr.(*ssh.PassphraseMissingError)
+		if !ok {
+			return nil, fmt.Errorf("parse private key failed %w", parseErr)
+		}
+
+		// Try to parse private key with passphrase.
+		if len(keyPassphrase) == 0 {
+			return nil, fmt.Errorf("parse private encrypted key without passphrase")
+		}
+		keyPass := keyPassphrase[0]
+		signer, parseErr = ssh.ParsePrivateKeyWithPassphrase(privateKeyBytes, []byte(keyPass))
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse private key with passphrase failed %w", parseErr)
+		}
+	}
+	return signer, nil
+}
+
+// Daemonize makes a new process with given params and create a pid and log file.
+func Daemonize(appName string, argv []string, pidPath string) (err error) {
+	var execPath string
+	execPath, err = os.Executable()
+	if err != nil {
+		return fmt.Errorf("find current executable path failed: %w", err)
+	}
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		return fmt.Errorf("eval synlinks %s failed: %w", execPath, err)
+	}
+	dir := filepath.Dir(execPath)
+	name := filepath.Join(dir, appName)
+	if info, statErr := os.Stat(name); statErr != nil || info.IsDir() {
+		execPath, err = exec.LookPath(appName)
+		if err != nil {
+			return fmt.Errorf("can not found %s from system: %w", appName, err)
+		}
+		abs, _ := filepath.Abs(execPath)
+		dir, name = filepath.Dir(abs), abs
+		LogInfo(context.Background(), "found %s from system with full path=%v", appName, name)
+	} else {
+		LogInfo(context.Background(), "found %s from current executable path=%v", appName, name)
+	}
+
+	var pidFile, logFile *os.File
+	pidFilePath := filepath.Join(pidPath, appName+".pid")
+	pidFile, err = os.OpenFile(pidFilePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("open pid file %s failed: %w", pidFilePath, err)
+	}
+	logFilePath := filepath.Join(filepath.Dir(pidFilePath), appName+".log")
+	logFile, err = os.OpenFile(logFilePath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0644)
+	if err != nil {
+		_ = pidFile.Close()
+		return fmt.Errorf("open log file %s failed: %w", logFilePath, err)
+	}
+
+	cmd := exec.Command(name, argv...)
+	cmd.Dir = dir
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, logFile, logFile
+	if err = cmd.Start(); err != nil {
+		_ = pidFile.Close()
+		_ = logFile.Close()
+		return fmt.Errorf("create daemon process %v failed: %v", appName, err)
+	}
+
+	pid := cmd.Process.Pid
+	if _, err = pidFile.WriteString(strconv.Itoa(pid)); err != nil {
+		_ = pidFile.Close()
+		_ = logFile.Close()
+		return fmt.Errorf("save daemon pid %v failed: %w", pid, err)
+	}
+	_ = pidFile.Close()
+	LogInfo(context.Background(), "daemonize %s success with pid=%v", appName, pid)
 	return nil
 }
 

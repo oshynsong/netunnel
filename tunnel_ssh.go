@@ -79,49 +79,11 @@ func NewSSHTunnel(opts ...SSHTunnelOpt) Tunnel {
 	return st
 }
 
-func (s *SSHTunnel) parseKeyFile() (ssh.Signer, error) {
-	privateKeyBytes, err := os.ReadFile(s.keyFilePath)
-	if err != nil {
-		return nil, fmt.Errorf("read private key with %s failed %w", s.keyFilePath, err)
-	}
-	signer, parseErr := ssh.ParsePrivateKey(privateKeyBytes)
-	if parseErr != nil {
-		_, ok := parseErr.(*ssh.PassphraseMissingError)
-		if !ok {
-			return nil, fmt.Errorf("parse private key failed %w", parseErr)
-		}
-		// Try to parse private key with passphrase.
-		signer, parseErr = ssh.ParsePrivateKeyWithPassphrase(privateKeyBytes, []byte(s.keyPassphrase))
-		if parseErr != nil {
-			return nil, fmt.Errorf("parse private key with passphrase failed %w", parseErr)
-		}
-	}
-	return signer, nil
-}
-
 func (s *SSHTunnel) Open(ctx context.Context, network, remoteAddr string) error {
 	// Initiate the ssh client config to prepare to create tunnel to remote.
-	conf := &ssh.ClientConfig{
-		User:            s.sshUser,
-		Timeout:         s.connTimeout,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-	}
-	conf.Ciphers = []string{
-		"aes256-gcm@openssh.com", "aes128-gcm@openssh.com",
-		"chacha20-poly1305@openssh.com",
-		"aes128-ctr", "aes192-ctr", "aes256-ctr",
-		"3des-cbc", // add this cipher to keep compatible connecting old version SSH servers
-	}
-	if len(s.password) != 0 {
-		conf.Auth = append(conf.Auth, ssh.Password(s.password))
-	} else if len(s.keyFilePath) != 0 {
-		signer, err := s.parseKeyFile()
-		if err != nil {
-			return err
-		}
-		conf.Auth = append(conf.Auth, ssh.PublicKeys(signer))
-	} else {
-		return fmt.Errorf("no password or private key given")
+	conf, err := BuildSSHClientConfig(s.sshUser, s.password, s.keyFilePath, s.connTimeout, s.keyPassphrase)
+	if err != nil {
+		return err
 	}
 	LogInfo(ctx, "SSHTunnel.Open: create client config success")
 
@@ -199,7 +161,7 @@ func (s *SSHTunnel) Listen(ctx context.Context, network, serverAddr string) erro
 		NoClientAuth:  true,
 		ServerVersion: "SSH-2.0-OWN-SERVER",
 	}
-	signer, err := s.parseKeyFile()
+	signer, err := ParseSSHPrivateKey(s.keyFilePath, s.keyPassphrase)
 	if err != nil {
 		return err
 	}
