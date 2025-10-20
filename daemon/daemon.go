@@ -1,4 +1,4 @@
-package daemonize
+package daemon
 
 import (
 	"fmt"

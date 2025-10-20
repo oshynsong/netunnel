@@ -11,7 +11,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/oshynsong/netunnel"
-	"github.com/oshynsong/netunnel/daemonize"
+	"github.com/oshynsong/netunnel/daemon"
 )
 
 var (
@@ -89,7 +89,7 @@ func init() {
 	viper.SetEnvPrefix("NETUNNEL")
 
 	rootFlags := rootCmd.PersistentFlags()
-	rootFlags.BoolVarP(&flagDaemonize, "daemonize", "d", false, "run the service as a daemon")
+	rootFlags.BoolVarP(&flagDaemonize, "daemon", "d", false, "run the service as a daemon")
 	rootFlags.Uint32Var(&flagLogLevel, "log-level", netunnel.LogLevelInfo, "set log output level 1 to 4, bigger value means less")
 	rootFlags.IntVar(&flagConcurrent, "concurrent", 0, "max concurrent goroutine count")
 	rootFlags.DurationVar(&flagAcceptMaxDelay, "accept-max-delay", time.Second, "max delay time when accept error occurs")
@@ -137,8 +137,8 @@ func runServerCmd(cmd *cobra.Command, args []string) error {
 	netunnel.SetLogLevel(flagLogLevel)
 	if flagDaemonize {
 		appName, subArgs := removeDaemonizeFlag()
-		cmd.Printf("run %s as a daemon success", appName)
-		return daemonize.Create(appName, subArgs)
+		cmd.Printf("run %s as a daemon: %v\n", appName, subArgs)
+		return daemon.Create(appName, subArgs)
 	}
 
 	tunnel, err := createTunnel()
@@ -169,8 +169,8 @@ func runClientCmd(cmd *cobra.Command, args []string) error {
 	netunnel.SetLogLevel(flagLogLevel)
 	if flagDaemonize {
 		appName, subArgs := removeDaemonizeFlag()
-		cmd.Printf("run %s as a daemon success", appName)
-		return daemonize.Create(appName, subArgs)
+		cmd.Printf("run %s as a daemon: %v\n", appName, subArgs)
+		return daemon.Create(appName, subArgs)
 	}
 
 	if flagWithRemote {

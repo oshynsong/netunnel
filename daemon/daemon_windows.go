@@ -1,4 +1,7 @@
-package daemonize
+//go:build windows
+// +build windows
+
+package daemon
 
 import (
 	"fmt"

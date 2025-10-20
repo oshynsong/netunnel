@@ -104,7 +104,8 @@ func ParseSSHPrivateKey(keyFile string, keyPassphrase ...string) (ssh.Signer, er
 
 	signer, parseErr := ssh.ParsePrivateKey(privateKeyBytes)
 	if parseErr != nil {
-		_, ok := parseErr.(*ssh.PassphraseMissingError)
+		var missErr *ssh.PassphraseMissingError
+		ok := errors.As(parseErr, &missErr)
 		if !ok {
 			return nil, fmt.Errorf("parse private key failed %w", parseErr)
 		}
