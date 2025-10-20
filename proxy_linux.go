@@ -5,7 +5,7 @@ package netunnel
 
 import "context"
 
-func SetupProxy(ctx context.Context, addrport string) (*ProxySetting, error) {
+func SetupProxy(ctx context.Context, proxyType, addrPort string) (*ProxySetting, error) {
 	panic("not implemented")
 }
 

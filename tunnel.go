@@ -42,6 +42,11 @@ type Tunnel interface {
 	Accept(ctx context.Context) (*TunnelConn, string, error)
 }
 
+const (
+	TypeTCP = "TCP"
+	TypeSSH = "SSH"
+)
+
 // TunnelConnID represents a identity of a tunnel connection.
 type TunnelConnID []byte
 

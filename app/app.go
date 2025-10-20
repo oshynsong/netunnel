@@ -221,7 +221,7 @@ func handleClientEvent(start bool) error {
 			// netunnel.WithEndpointConcurrent(flagConcurrent),
 			// netunnel.WithEndpointMaxAcceptDelay(flagAcceptMaxDelay),
 			netunnel.WithEndpointServerAddr(serverAddr),
-			netunnel.WithEndpointProxyProto(pp),
+			netunnel.WithEndpointProxyProto(cproto, pp),
 		)
 		if err != nil {
 			return err

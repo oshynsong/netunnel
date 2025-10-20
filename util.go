@@ -17,17 +17,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-const (
-	TypeTCP = "TCP"
-	TypeSSH = "SSH"
-)
-
-const (
-	ProxyTypeHttp   = "HTTP"
-	ProxyTypeSocks5 = "SOCKS5"
-	ProxyTypeSocks4 = "SOCKS4"
-)
-
 var (
 	ErrUnknown                = errors.New("netunnel: unknown error")
 	ErrNotImplemented         = errors.New("netunnel: not implemented")

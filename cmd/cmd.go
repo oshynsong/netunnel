@@ -218,6 +218,8 @@ func runClientCmd(cmd *cobra.Command, args []string) error {
 		proxyProto = netunnel.NewSocksV5ProxyProto(flagProxyAuthUser, flagProxyAuthPass)
 	case netunnel.ProxyTypeHttp:
 		proxyProto = netunnel.NewHttpProxyProto(flagProxyAuthUser, flagProxyAuthPass)
+	case netunnel.ProxyTypeHttps:
+		return fmt.Errorf("to be implemented later")
 	default:
 		return fmt.Errorf("invalid proxy protocol: %s", proto)
 	}
@@ -229,7 +231,7 @@ func runClientCmd(cmd *cobra.Command, args []string) error {
 		netunnel.WithEndpointConcurrent(flagConcurrent),
 		netunnel.WithEndpointMaxAcceptDelay(flagAcceptMaxDelay),
 		netunnel.WithEndpointServerAddr(flagServerAddr),
-		netunnel.WithEndpointProxyProto(proxyProto),
+		netunnel.WithEndpointProxyProto(proto, proxyProto),
 	)
 	if err != nil {
 		return err

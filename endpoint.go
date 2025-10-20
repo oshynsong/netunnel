@@ -67,6 +67,7 @@ type Endpoint struct {
 	network        string
 	serverAddr     string
 	clientAddr     string
+	proxyType      string
 	proxyProto     ProxyProto
 	concurrent     chan struct{}
 	maxAcceptDelay time.Duration
@@ -125,8 +126,9 @@ func WithEndpointMaxAcceptDelay(delay time.Duration) EndpointOpt {
 	}
 }
 
-func WithEndpointProxyProto(pp ProxyProto) EndpointOpt {
+func WithEndpointProxyProto(pt string, pp ProxyProto) EndpointOpt {
 	return func(e *Endpoint) {
+		e.proxyType = pt
 		e.proxyProto = pp
 	}
 }
@@ -215,7 +217,7 @@ func (e *Endpoint) serveClient(ctx context.Context) (err error) {
 	LogInfo(ctx, "client endpoint listen success at %s", e.clientAddr)
 	defer listener.Close()
 
-	e.proxySetting, err = SetupProxy(ctx, e.clientAddr)
+	e.proxySetting, err = SetupProxy(ctx, e.proxyType, e.clientAddr)
 	if err != nil {
 		return fmt.Errorf("client endpoint setup proxy failed: %v", err)
 	}
