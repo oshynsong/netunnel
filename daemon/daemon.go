@@ -16,6 +16,13 @@ func init() {
 }
 
 func defaultRunningChecker(appName string) error {
+	pidList, err := GetPid(appName)
+	if err != nil {
+		return fmt.Errorf("get pid of app %s failed: %w", appName, err)
+	}
+	if len(pidList) == 0 {
+		return fmt.Errorf("app %s has no running process", appName)
+	}
 	return nil
 }
 

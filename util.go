@@ -31,7 +31,7 @@ var (
 // ExitNotify registers the exit signal handler to the kernel to exit gracefully.
 func ExitNotify() <-chan os.Signal {
 	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(signalChan, syscall.SIGINT, syscall.SIGKILL, syscall.SIGTERM)
 	return signalChan
 }
 

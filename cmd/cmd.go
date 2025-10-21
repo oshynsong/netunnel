@@ -3,6 +3,9 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -299,6 +302,26 @@ func runToolCmd(cmd *cobra.Command, args []string) error {
 		public, private := netunnel.GenAuthKey()
 		fmt.Printf("public:\n%s\n", public)
 		fmt.Printf("private:\n%s\n", private)
+	case "KILL":
+		appName := filepath.Base(os.Args[0])
+		pidList, err := daemon.GetPid(appName)
+		if err != nil {
+			return err
+		}
+		cmd.Printf("found %s pids: %v\n", appName, pidList)
+		for _, pid := range pidList {
+			intPid, err := strconv.Atoi(pid)
+			if err != nil {
+				continue
+			}
+			p, pe := os.FindProcess(intPid)
+			if pe != nil {
+				continue
+			}
+			if err = p.Signal(os.Kill); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
