@@ -1,5 +1,4 @@
 //go:build windows
-// +build windows
 
 package daemon
 
@@ -7,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -81,7 +82,7 @@ func GetPid(appName string) ([]string, error) {
 			continue
 		}
 		exeFile := path.Base(strings.ToLower(syscall.UTF16ToString(moduleName)))
-		if strings.EqualFold(exeFile, procName) {
+		if strings.EqualFold(exeFile, appName) {
 			matches = append(matches, strconv.FormatUint(uint64(pid), 10))
 		}
 	}

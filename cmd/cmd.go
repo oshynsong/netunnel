@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -318,7 +319,7 @@ func runToolCmd(cmd *cobra.Command, args []string) error {
 			if pe != nil {
 				continue
 			}
-			if err = p.Signal(os.Kill); err != nil {
+			if err = p.Signal(syscall.SIGKILL); err != nil {
 				return err
 			}
 		}
