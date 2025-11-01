@@ -294,8 +294,10 @@ func (e *Endpoint) Close(ctx context.Context) {
 	if e.tunnel != nil {
 		_ = e.tunnel.Close()
 	}
-	if err := ResetProxy(ctx, e.proxySetting); err != nil {
-		LogError(ctx, "reset proxy failed: %v", err)
+	if e.typ == EndpointClient {
+		if err := ResetProxy(ctx, e.proxySetting); err != nil {
+			LogError(ctx, "reset proxy failed: %v", err)
+		}
 	}
 	close(e.done)
 	e.exitWg.Wait()
