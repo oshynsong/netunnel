@@ -13,10 +13,32 @@ func init() {
 	SetLogLevel(LogLevelDebug)
 }
 
-func TestLogger(t *testing.T) {
+func TestStdLogger(t *testing.T) {
 	logCtx := NewLogID(context.TODO())
 	logID := GetLogID(logCtx)
 	assert.NotEmpty(t, logID)
+
+	LogDebug(logCtx, "debug message test")
+
+	LogInfo(logCtx, "info message test")
+
+	LogError(logCtx, "error message test")
+
+	LogFatal(logCtx, "fatal message test")
+}
+
+func TestSysFileLogger(t *testing.T) {
+	logCtx := NewLogID(context.TODO())
+	logID := GetLogID(logCtx)
+	assert.NotEmpty(t, logID)
+
+	sf, err := NewSysFileLogger()
+	assert.Nil(t, err)
+	assert.NotNil(t, sf)
+
+	old := globalLogger
+	SetLogger(sf)
+	defer SetLogger(old)
 
 	LogDebug(logCtx, "debug message test")
 

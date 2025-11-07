@@ -8,6 +8,8 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -132,4 +134,71 @@ func (s *stdLogger) LogInfo(ctx context.Context, format string, v ...interface{}
 
 func (s *stdLogger) LogDebug(ctx context.Context, format string, v ...interface{}) {
 	s.logger.Output(3, fmt.Sprintf("[DEBUG] "+format, v...))
+}
+
+// NewSysFileLogger creates a system file logger with optional given filename.
+func NewSysFileLogger(filename ...string) (Logger, error) {
+	var name string
+	if len(filename) != 0 {
+		name = filename[0]
+	} else {
+		dir, err := os.UserHomeDir()
+		if err != nil {
+			dir = os.TempDir()
+		}
+		dir = filepath.Join(dir, ".netunnel")
+		if err = os.MkdirAll(dir, 0755); err != nil {
+			return nil, err
+		}
+		name = filepath.Join(dir, "netunnel.log")
+	}
+	f, err := os.OpenFile(name, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0666)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("netunnel: create sys file logger at %s\n", name)
+	return &sysFileLogger{f: f}, nil
+}
+
+type sysFileLogger struct {
+	f *os.File
+}
+
+func (s *sysFileLogger) pos() (file string, line int) {
+	var ok bool
+	_, file, line, ok = runtime.Caller(3)
+	if !ok {
+		file = "???"
+		line = 0
+	}
+	file = filepath.Base(file)
+	return
+}
+
+func (s *sysFileLogger) LogFatal(ctx context.Context, format string, v ...interface{}) {
+	t := time.Now().Format(time.DateTime)
+	file, line := s.pos()
+	fmtStr := fmt.Sprintf("[FATAL] %s %s:%d %s\n", t, file, line, format)
+	fmt.Fprintf(s.f, fmtStr, v...)
+}
+
+func (s *sysFileLogger) LogError(ctx context.Context, format string, v ...interface{}) {
+	t := time.Now().Format(time.DateTime)
+	file, line := s.pos()
+	fmtStr := fmt.Sprintf("[ERROR] %s %s:%d %s\n", t, file, line, format)
+	fmt.Fprintf(s.f, fmtStr, v...)
+}
+
+func (s *sysFileLogger) LogInfo(ctx context.Context, format string, v ...interface{}) {
+	t := time.Now().Format(time.DateTime)
+	file, line := s.pos()
+	fmtStr := fmt.Sprintf("[INFO] %s %s:%d %s\n", t, file, line, format)
+	fmt.Fprintf(s.f, fmtStr, v...)
+}
+
+func (s *sysFileLogger) LogDebug(ctx context.Context, format string, v ...interface{}) {
+	t := time.Now().Format(time.DateTime)
+	file, line := s.pos()
+	fmtStr := fmt.Sprintf("[DEBUG] %s %s:%d %s\n", t, file, line, format)
+	fmt.Fprintf(s.f, fmtStr, v...)
 }

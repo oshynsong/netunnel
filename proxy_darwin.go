@@ -81,7 +81,7 @@ func ResetProxy(ctx context.Context, old *ProxySetting) error {
 	case ProxyTypeSocks4, ProxyTypeSocks5:
 		setAction = "-setsocksfirewallproxy"
 	default:
-		return fmt.Errorf("unsupported proxy type %s", &old.proxyType)
+		return fmt.Errorf("unsupported proxy type %s", old.proxyType)
 	}
 
 	if old.enabled != 0 {
