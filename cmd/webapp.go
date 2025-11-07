@@ -5,13 +5,13 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
-	"time"
-
-	"github.com/gorilla/websocket"
+	"sync"
 
 	"github.com/oshynsong/netunnel"
 	"github.com/oshynsong/netunnel/statics"
@@ -21,9 +21,10 @@ const tokenHeaderKey = "X-Net-Token"
 
 func createWebappMux(user, pass string) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", webappAuthMiddleware(user, pass, webappIndexHandler))
+	mux.HandleFunc("/", webappAuthMiddleware(user, pass, webappMainHandler))
 	mux.HandleFunc("/favicon.ico", webappFaviconHandler)
-	mux.HandleFunc("/api/ws", webappWSHandler)
+	mux.HandleFunc("/sw.js", webappServiceWorkerHandler)
+	mux.HandleFunc("/forward/", webappForwardHandler)
 	return mux
 }
 
@@ -51,8 +52,8 @@ func webappAuthMiddleware(user, pass string, next http.HandlerFunc) http.Handler
 	}
 }
 
-func webappIndexHandler(w http.ResponseWriter, r *http.Request) {
-	index, err := statics.Get("index.html")
+func webappMainHandler(w http.ResponseWriter, r *http.Request) {
+	index, err := statics.Get("main.html")
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		netunnel.LogError(r.Context(), "can't load index.html: %w", err)
@@ -93,94 +94,107 @@ func webappFaviconHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-var webappHandshake = websocket.Upgrader{
-	HandshakeTimeout: time.Second,
-	ReadBufferSize:   8 * 1024,
-	WriteBufferSize:  8 * 1024,
-	CheckOrigin: func(r *http.Request) bool {
-		origin := r.Header["Origin"]
-		if len(origin) == 0 {
-			netunnel.LogError(r.Context(), "missing origin header")
-			return false
-		}
-		u, err := url.Parse(origin[0])
-		if err != nil {
-			netunnel.LogError(r.Context(), "origin header %v parse failed: %v", origin[0], err)
-			return false
-		}
-		if !strings.EqualFold(u.Host, r.Host) {
-			netunnel.LogError(r.Context(), "origin header %s not equal request host %v", u.Host, r.Host)
-			return false
-		}
-		return true
-	},
-	EnableCompression: true,
-}
+var (
+	sessionKeyMap  = make(map[string]string) // ip => sessionKey
+	sessionKeyLock = new(sync.RWMutex)
+)
 
-func webappWSHandler(w http.ResponseWriter, r *http.Request) {
+func webappServiceWorkerHandler(w http.ResponseWriter, r *http.Request) {
+	netunnel.LogInfo(r.Context(), "handle service worker register: %s", r.URL)
+	var err error
+	var body []byte
+	defer func() {
+		if err != nil {
+			netunnel.LogError(r.Context(), "service worker handler failed: %w", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		if _, err = w.Write(body); err != nil {
+			netunnel.LogError(r.Context(), "write sw.js failed: %w", err)
+		}
+	}()
+
 	// Get the server random key from cookie, which set by the index handler.
-	serverToken, err := r.Cookie(tokenHeaderKey)
+	var serverToken *http.Cookie
+	serverToken, err = r.Cookie(tokenHeaderKey)
 	if err != nil || serverToken == nil || len(serverToken.Value) == 0 {
-		netunnel.LogError(r.Context(), "get server token key failed: %w", err)
+		err = fmt.Errorf("get server token key failed: %w", err)
 		return
 	}
 	netunnel.LogInfo(r.Context(), "got server token key: %s", serverToken.Value)
 
-	// Get the client random key to generate the session token.
-	clientToken, addr := r.URL.Query().Get("key"), r.URL.Query().Get("addr")
-	if len(clientToken) == 0 || len(addr) == 0 {
-		netunnel.LogError(r.Context(), "client token key or addr invalid")
+	// Get the client random token to generate the session token.
+	clientToken := r.URL.Query().Get("token")
+	if len(clientToken) == 0 {
+		err = fmt.Errorf("client token key not given")
 		return
 	}
+	netunnel.LogInfo(r.Context(), "got client token key: %s", clientToken)
 	sessionKey := sha256.Sum256([]byte(serverToken.Value + clientToken))
-	netunnel.LogInfo(r.Context(), "got client token=%s addr=%s sessionKey=%x", clientToken, addr, sessionKey)
-
-	// Perform the websocket handshake.
-	conn, connErr := webappHandshake.Upgrade(w, r, nil)
-	if connErr != nil {
-		netunnel.LogError(r.Context(), "websocket upgrade failed: %v", connErr)
+	remoteAddr, addrErr := netip.ParseAddrPort(r.RemoteAddr)
+	if addrErr != nil {
+		err = fmt.Errorf("parse remote addr failed: %w", addrErr)
 		return
 	}
-	defer conn.Close()
+	sessionKeyLock.Lock()
+	sessionKeyMap[remoteAddr.Addr().String()] = string(sessionKey[:])
+	sessionKeyLock.Unlock()
+	netunnel.LogInfo(r.Context(), "generate session key %x for client: %s", sessionKey, remoteAddr)
 
-	/*var lastPingWrite time.Time
-	go func() {
-		pingInterval := time.Second * 5
-		t := time.NewTimer(pingInterval)
-		defer t.Stop()
-		for {
-			select {
-			case c := <-t.C:
-				if err := conn.WriteMessage(websocket.PingMessage, []byte("PING")); err != nil {
-					netunnel.LogError(r.Context(), "websocket ping failed: %v", err)
-					return
-				}
-				atomic.StorePointer((*unsafe.Pointer)(unsafe.Pointer(&lastPingWrite)), unsafe.Pointer(&c))
-			}
+	// Return the service worker module.
+	body, err = statics.Get("sw.js")
+	if err != nil {
+		err = fmt.Errorf("can't load sw.js: %w", err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/javascript")
+}
+
+func webappForwardHandler(w http.ResponseWriter, r *http.Request) {
+	var err error
+	var addr string
+	defer func() {
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			netunnel.LogError(r.Context(), "forward request %s failed: %v", addr, err)
 		}
 	}()
-	*/
 
-	resp, err := http.DefaultClient.Get(addr)
-	if err != nil {
-		netunnel.LogError(r.Context(), "websocket GET failed: %v", err)
+	// Proxy the request to the real server side.
+	addr = r.URL.Query().Get("addr")
+	path := strings.TrimPrefix(r.URL.Path, "/forward")
+	var proxyReq *http.Request
+	addr = strings.TrimSuffix(addr, "/") + "/" + strings.TrimPrefix(path, "/")
+	addr = strings.TrimSuffix(addr, "/")
+	up, upErr := url.Parse(addr)
+	if upErr != nil {
+		err = fmt.Errorf("parse forward url failed: %w", upErr)
 		return
 	}
-	bodyBytes, _ := io.ReadAll(resp.Body)
-	if err = conn.WriteMessage(websocket.TextMessage, bodyBytes); err != nil {
-		netunnel.LogError(r.Context(), "websocket write failed: %v", err)
+	if len(up.Scheme) == 0 {
+		up.Scheme = "http"
 	}
-	for {
-		msgType, msg, msgErr := conn.ReadMessage()
-		if msgErr != nil {
-			netunnel.LogError(r.Context(), "websocket read message failed: %v", msgErr)
-			return
-		}
-		netunnel.LogInfo(r.Context(), "websocket read message: type=%v msg=%v", msgType, string(msg))
-
-		if msgErr = conn.WriteMessage(msgType, msg); msgErr != nil {
-			netunnel.LogError(r.Context(), "websocket write message failed: %v", msgErr)
-			return
-		}
+	addr = up.String()
+	proxyReq, err = http.NewRequest(r.Method, up.String(), r.Body)
+	if err != nil {
+		err = fmt.Errorf("create proxy request failed: %w", err)
+		return
+	}
+	var proxyResp *http.Response
+	proxyResp, err = http.DefaultClient.Do(proxyReq)
+	if err != nil {
+		err = fmt.Errorf("send proxy request failed: %w", err)
+		return
+	}
+	respBody, _ := io.ReadAll(proxyResp.Body)
+	// reg := regexp.MustCompile(`((https?:)?//([\w_-]+\.)+[\w_-]+/?)([A-Za-z0-9./!@#$%&?=\-_;]*)`)
+	// body = reg.ReplaceAll(respBody, []byte(`/forward/$4?addr=$1`))
+	w.WriteHeader(proxyResp.StatusCode)
+	// w.Header().Set("Content-Type", proxyResp.Header.Get("Content-Type"))
+	if _, err = w.Write(respBody); err != nil {
+		netunnel.LogError(r.Context(), "forward write response failed: %w", err)
+	} else {
+		netunnel.LogInfo(r.Context(), "forward request %s success", addr)
 	}
 }

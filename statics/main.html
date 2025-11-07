@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <title>NETUNNEL</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            background: #fff;
+        }
+
+        #header {
+            height: 40px;
+            width: 100%;
+            display: flex;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+        }
+        .header-box {
+            height: 40px;
+            width: 40px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #444444;
+            border: none;
+        }
+        #address {
+            flex: 1;
+            height: 40px;
+            width: 100%;
+            margin: 0;
+            padding: 0;
+        }
+        #address > input{
+            height: 40px;
+            width: 100%;
+            margin: 0;
+            padding: 0 8px 0 8px;
+            font-size: 16px;
+            border: none;
+            font-family: system-ui, PingFang SC, STHeiti, sans-serif;
+            color: #fff;
+            transition: background-color 0.2s;
+            background-color: #333333;
+        }
+        #address > input:focus {
+            border: none;
+            outline: none;
+            caret-color: white;
+        }
+        #address > input:hover {
+            background-color: #444444;
+        }
+        .header-box > .icon {
+            width: 30px;
+            height: 30px;
+            padding: 0;
+            margin: 0 5px 0 5px;
+            border-radius: 50%;
+            font-size: 18px;
+            color: #888;
+            transition: background-color 0.5s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+        .header-box > .icon:hover {
+            background-color: #555555;
+        }
+        .header-box > .icon-star {
+            width: 22px;
+            height: 22px;
+            background-color: #bcbcbc;
+            border: none;
+            cursor: pointer;
+            position: relative;
+            clip-path: polygon(
+                    50% 0%,
+                    61% 35%,
+                    98% 35%,
+                    68% 57%,
+                    79% 91%,
+                    50% 70%,
+                    21% 91%,
+                    32% 57%,
+                    2% 35%,
+                    39% 35%
+            );
+            transition: transform 0.2s, background-color 0.2s;
+        }
+        .header-box > .icon-star:hover {
+            background-color: #fefefe;
+            transform: scale(1.1);
+        }
+
+        #content {
+            top: 40px;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            position: absolute;
+            display: block;
+            width: 100%;
+            padding: 0;
+            margin: 0;
+            background-color: #bababa;
+            overflow: scroll;
+        }
+    </style>
+</head>
+<body id="body">
+<script>
+    let GenToken = function () {
+        const tokenLen = 32;
+        const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        let result = '';
+        for (let i = 0; i < tokenLen; i++) {
+            result += characters.charAt(Math.floor(Math.random() * tokenLen));
+        }
+        return result;
+    }
+    let GetAddress = function () {
+        let node = document.getElementById("address");
+        return node.lastChild.value;
+    };
+
+    const documentHandler = function () {
+        const body = document.getElementById("body");
+        let err = '<p style="color: red; font-weight: bold">YOU ARE RUNNING INTO AN INVALID PAGE, PLEASE CONTRACT THE ADMINISTRATOR!</p>';
+        let initBody = function () {
+            let container = `<div id="header">
+                <div id="backward" class="header-box"><div class="icon">&larr;</div></div>
+                <div id="forward" class="header-box"><div class="icon">&rarr;</div></div>
+                <div id="refresh" class="header-box"><div class="icon"><div style="font-size: 24px; height: 38px; margin: 0; padding: 0">⟳</div></div></div>
+
+                <label id="address"><input name="address" type="text" placeholder="input the website address" /></label>
+
+                <div id="go" class="header-box"><div class="icon">☞</div></div>
+                <div id="star" class="header-box"><div class="icon-star"></div></div>
+            </div>
+            <div id="content"></div>`;
+            body.insertAdjacentHTML('beforeend', container);
+            document.getElementById("go").addEventListener("click", function (event) {
+                let url = new URL(location.href + "forward");
+                let addr = GetAddress();
+                url.searchParams.append("addr", addr);
+                fetch(url.toString()).then(data => data.text()).then(data => {
+                    console.log("fetch " + addr + " got size=" + data.length);
+                    let content = document.getElementById("content");
+                    while (content.firstChild) {
+                        content.removeChild(content.firstChild);
+                    }
+                    content.insertAdjacentHTML("beforeend", data);
+                });
+            });
+        };
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistration().then(function (reg) {
+                if (reg) {
+                    initBody();
+                    return;
+                }
+                let token = GenToken();
+                console.log("register sw.js starting...");
+                navigator.serviceWorker.register('/sw.js?token='+token).then(() => {
+                    console.log("register sw.js succeeded.");
+                    initBody();
+                }).catch((error) => {
+                    console.log("register sw.js failed.", error);
+                    body.insertAdjacentHTML('beforeend', err);
+                });
+            })
+        } else {
+            body.insertAdjacentHTML('beforeend', err);
+        }
+    };
+    if (document.readyState !== "loading") {
+        documentHandler();
+    } else {
+        document.addEventListener('DOMContentLoaded', documentHandler);
+    }
+</script>
+</body>
+</html>
