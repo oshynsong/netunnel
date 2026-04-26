@@ -21,10 +21,10 @@ func TestSessionKey(t *testing.T) {
 	pubKey2, priKey2, err := ed25519.GenerateKey(rand.Reader)
 	assert.Nil(t, err)
 
-	sk1, err1 := NewSessionKey(serverConn, false)
+	sk1, err1 := NewServerSessionKey(serverConn)
 	assert.Nil(t, err1)
 	assert.NotNil(t, sk1)
-	sk2, err2 := NewSessionKey(clientConn, true)
+	sk2, err2 := NewClientSessionKey(clientConn)
 	assert.Nil(t, err2)
 	assert.NotNil(t, sk2)
 
@@ -32,11 +32,11 @@ func TestSessionKey(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		fmt.Println(sk1.Process(context.TODO(), priKey1, []ed25519.PublicKey{pubKey2}))
+		fmt.Println(sk1.ServerProcess(context.TODO(), priKey1, []ed25519.PublicKey{pubKey2}))
 	}()
 	go func() {
 		defer wg.Done()
-		fmt.Println(sk2.Process(context.TODO(), priKey2, []ed25519.PublicKey{pubKey1}))
+		fmt.Println(sk2.ClientProcess(context.TODO(), priKey2, []ed25519.PublicKey{pubKey1}))
 	}()
 	wg.Wait()
 

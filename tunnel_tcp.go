@@ -146,11 +146,11 @@ func (t *TCPTunnel) Dial(ctx context.Context, network, targetAddr string) (*Tunn
 	realConn.SetKeepAlivePeriod(t.keepAlive)
 
 	LogDebug(ctx, "TCPTunnel.Accept: start to gen session key for %s", targetAddr)
-	sessionKey, keyErr := NewSessionKey(conn, true)
+	sessionKey, keyErr := NewClientSessionKey(conn)
 	if keyErr != nil {
 		return nil, keyErr
 	}
-	if err = sessionKey.Process(ctx, t.authPrivateKey, t.authPublicKeys); err != nil {
+	if err = sessionKey.ClientProcess(ctx, t.authPrivateKey, t.authPublicKeys); err != nil {
 		return nil, err
 	}
 	LogDebug(ctx, "TCPTunnel.Dial: create session key success for %s", targetAddr)
@@ -195,11 +195,11 @@ func (t *TCPTunnel) Accept(ctx context.Context) (tc *TunnelConn, targetAddr stri
 	}
 
 	LogDebug(ctx, "TCPTunnel.Accept: start to gen session key from %s", conn.RemoteAddr())
-	sessionKey, keyErr := NewSessionKey(conn, false)
+	sessionKey, keyErr := NewServerSessionKey(conn)
 	if keyErr != nil {
 		return nil, targetAddr, keyErr
 	}
-	if err = sessionKey.Process(ctx, t.authPrivateKey, t.authPublicKeys); err != nil {
+	if err = sessionKey.ServerProcess(ctx, t.authPrivateKey, t.authPublicKeys); err != nil {
 		return nil, targetAddr, err
 	}
 	LogDebug(ctx, "TCPTunnel.Accept: create session key success from %s", conn.RemoteAddr())
