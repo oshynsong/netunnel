@@ -14,17 +14,16 @@ import (
 // between two endpoints over the unsecure network. It can be divided into the
 // client-side and server-side functions to build program run respectively.
 //
-// The architecture of a tunnel can be modeled as follows:
+// The architecture of a tunnel and related components are modeled as follows:
 //
-//	                        [Open/Dial]    [Listen/Accept]
-//	+-----+      +-------------+  |           |  +-------------+      +--------+
-//	| app | <--> | client-side |  <===Tunnel==>  | server-side | <--> | remote |
-//	+-----+      +-------------+  |           |  +-------------+      +--------+
-//	                        [KeepAlive/Close]
+//	                        [Open/Dial]   [Listen/Accept]
+//	              +-------------+  |            |  +-------------+
+//	{local} <---> | client-side |  <===Tunnel===>  | server-side | <---> {remote}
+//	              +-------------+          |       +-------------|
+//	        {{LocalProxy}}          [KeepAlive/Close]         {{DialRemote}}
 type Tunnel interface {
 	// Open builds a new connection tunnel from local side to remote side.
-	// Different authentication strategies should be concerned by the specific
-	// low-level implementation such as SSH, SSL, IPSec etc.
+	// Different authentication strategies should be implemented here.
 	Open(ctx context.Context, network, remoteAddr string) error
 	// Close shutdowns the tunnel created by the Open method to release resources.
 	Close() error
@@ -40,6 +39,26 @@ type Tunnel interface {
 	// Accept returns the new connection to the target address at the server-side
 	// to provide security communication.
 	Accept(ctx context.Context) (*TunnelConn, string, error)
+}
+
+// LocalProxy abstracts the proxy server inside the client side of a Tunnel. It
+// creates a local proxy listener to accept local connections, then performs a
+// handshake with local applications to obtain the target address.
+type LocalProxy interface {
+	// Setup builds a local listener at the client side to accept connections
+	// from local applications, acting as a forward proxy server.
+	Setup(ctx context.Context, network, localAddr string) (net.Listener, error)
+	// Handshake uses the connections accepted by the above listener from local
+	// applications to get the target address with the protocol such as SOCKS.
+	Handshake(ctx context.Context, localConn net.Conn) (string, error)
+	// Reset resets the local proxy settings to its previous status.
+	Reset(ctx context.Context) error
+}
+
+// RemoteDialer abstracts the remote dialer to connect the remote targets.
+type RemoteDialer interface {
+	// DialRemote creates the connection to the target address at the server-side.
+	DialRemote(ctx context.Context, network, targetAddr string) (net.Conn, error)
 }
 
 const (
@@ -172,4 +191,11 @@ func (t *TunnelConn) ReadFrom(r io.Reader) (n int64, err error) {
 		err = nil // treat EOF as nil error
 	}
 	return n, err
+}
+
+type defaultDialer struct{}
+
+func (d defaultDialer) DialRemote(ctx context.Context, network, targetAddr string) (net.Conn, error) {
+	var dialer net.Dialer
+	return dialer.DialContext(ctx, network, targetAddr)
 }

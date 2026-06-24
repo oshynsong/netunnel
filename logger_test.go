@@ -71,8 +71,10 @@ func (c *customLogger) LogFatal(ctx context.Context, format string, v ...interfa
 
 func TestCustomLogger(t *testing.T) {
 	old, newLogger := globalLogger, new(customLogger)
-	SetLogger(newLogger)
-	defer SetLogger(old)
+	globalLogger = newLogger
+	defer func() {
+		globalLogger = old
+	}()
 
 	LogDebug(context.TODO(), "debug message test")
 	LogInfo(context.TODO(), "info message test")

@@ -82,6 +82,16 @@ func checkClientProtocol() error {
 	if len(flagClientProtocol) == 0 {
 		return fmt.Errorf("client protocol is required")
 	}
+	proto := strings.ToUpper(flagClientProtocol)
+	switch proto {
+	case netunnel.ProxyTypeSocks4:
+	case netunnel.ProxyTypeSocks5:
+	case netunnel.ProxyTypeHttp:
+	case netunnel.ProxyTypeHttps:
+		return fmt.Errorf("proxy type https to be implemented later")
+	default:
+		return fmt.Errorf("invalid proxy protocol: %s", proto)
+	}
 	return nil
 }
 
@@ -114,13 +124,6 @@ func checkKeyFile() error {
 func checkToolName() error {
 	if len(flagToolName) == 0 {
 		return fmt.Errorf("tool name is required")
-	}
-	return nil
-}
-
-func checkLocalAddr() error {
-	if len(flagLocalAddr) == 0 {
-		return fmt.Errorf("local addr is required")
 	}
 	return nil
 }

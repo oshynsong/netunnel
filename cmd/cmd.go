@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -68,16 +67,6 @@ AUTH_USER and NETUNNEL_PROXY_AUTH_PASS. A typical setup with required flag will 
 		},
 	}
 
-	webappCmd = &cobra.Command{
-		Use:   "webapp",
-		Short: "Run the netunnel as an web application server",
-		RunE:  runWebappCmd,
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			// return chainCheck(checkServerAddr, checkKeyFile, checkTunnelType, checkClientAddr, checkLocalAddr)
-			return nil
-		},
-	}
-
 	toolCmd = &cobra.Command{
 		Use:   "tool",
 		Short: "Provide util tools",
@@ -125,15 +114,11 @@ func init() {
 	clientFlags.StringVar(&flagProxyAuthPass, "proxy-auth-pass", viper.GetString("proxy_auth_pass"), "specify the proxy authenticate password")
 	clientFlags.BoolVar(&flagWithRemote, "with-remote", false, "setup and reset the remote server")
 
-	webappFlags := webappCmd.PersistentFlags()
-	webappFlags.StringVar(&flagLocalAddr, "local-addr", ":8080", "specify the local address")
-
 	toolFlags := toolCmd.PersistentFlags()
 	toolFlags.StringVar(&flagToolName, "name", "", "specify the name of the tool")
 
 	rootCmd.AddCommand(serverCmd)
 	rootCmd.AddCommand(clientCmd)
-	rootCmd.AddCommand(webappCmd)
 	rootCmd.AddCommand(toolCmd)
 }
 
@@ -213,20 +198,22 @@ func runClientCmd(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	var proxyProto netunnel.ProxyProto
+
+	var proxy netunnel.LocalProxy
 	proto := strings.ToUpper(flagClientProtocol)
 	switch proto {
 	case netunnel.ProxyTypeSocks4:
-		proxyProto = netunnel.NewSocksV4ProxyProto()
+		proxy = netunnel.NewSystemProxy(proto, netunnel.NewSocksV4ProxyProto())
 	case netunnel.ProxyTypeSocks5:
-		proxyProto = netunnel.NewSocksV5ProxyProto(flagProxyAuthUser, flagProxyAuthPass)
+		proxy = netunnel.NewSystemProxy(proto, netunnel.NewSocksV5ProxyProto(flagProxyAuthUser, flagProxyAuthPass))
 	case netunnel.ProxyTypeHttp:
-		proxyProto = netunnel.NewHttpProxyProto(flagProxyAuthUser, flagProxyAuthPass)
+		proxy = netunnel.NewSystemProxy(proto, netunnel.NewHttpProxyProto(flagProxyAuthUser, flagProxyAuthPass))
 	case netunnel.ProxyTypeHttps:
 		return fmt.Errorf("to be implemented later")
 	default:
 		return fmt.Errorf("invalid proxy protocol: %s", proto)
 	}
+
 	endpoint, err := netunnel.NewEndpoint(
 		netunnel.EndpointClient,
 		flagNetwork,
@@ -235,7 +222,7 @@ func runClientCmd(cmd *cobra.Command, args []string) error {
 		netunnel.WithEndpointConcurrent(flagConcurrent),
 		netunnel.WithEndpointMaxAcceptDelay(flagAcceptMaxDelay),
 		netunnel.WithEndpointServerAddr(flagServerAddr),
-		netunnel.WithEndpointProxyProto(proto, proxyProto),
+		netunnel.WithEndpointLocalProxy(proxy),
 	)
 	if err != nil {
 		return err
@@ -280,20 +267,6 @@ func createTunnel() (netunnel.Tunnel, error) {
 		), nil
 	}
 	return nil, fmt.Errorf("tunnel type not supported: %v", flagTunnelType)
-}
-
-func runWebappCmd(cmd *cobra.Command, args []string) error {
-	public, private := netunnel.GenAuthKey()
-	netunnel.LogInfo(cmd.Context(), "start server with listening on %s: user=%s pass=%s", flagLocalAddr, public, private)
-	mux := createWebappMux(public, private)
-	s := &http.Server{
-		Addr:         flagLocalAddr,
-		Handler:      mux,
-		ReadTimeout:  time.Second * 10,
-		WriteTimeout: time.Second * 10,
-		IdleTimeout:  time.Second * 30,
-	}
-	return s.ListenAndServe()
 }
 
 func runToolCmd(cmd *cobra.Command, args []string) error {

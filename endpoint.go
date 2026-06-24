@@ -2,6 +2,7 @@ package netunnel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -17,61 +18,18 @@ const (
 	EndpointClient
 )
 
-// ProxyProto defines how to handshake and get the target addr to build the proxy.
-type ProxyProto = func(ctx context.Context, local net.Conn) (addr string, err error)
-
-func NewSocksV4ProxyProto() ProxyProto {
-	return func(ctx context.Context, local net.Conn) (addr string, err error) {
-		sp := NewSocksProcessor(local, WithSocksVersion(SocksV4))
-		if err = sp.Process(ctx); err != nil {
-			return
-		}
-		return sp.RequestAddr.String(), nil
-	}
-}
-
-func NewSocksV5ProxyProto(user, pass string) ProxyProto {
-	return func(ctx context.Context, local net.Conn) (addr string, err error) {
-		opts := []SocksOpt{WithSocksVersion(SocksV5)}
-		if len(user) != 0 && len(pass) != 0 {
-			opts = append(opts, WithSocksAuthMethod([]byte{SocksAuthMethodUserPass}, SocksAuthMethodUserPass))
-			opts = append(opts, WithSocksAuthUserPass(user, pass))
-		}
-		sp := NewSocksProcessor(local, opts...)
-		if err = sp.Process(ctx); err != nil {
-			return
-		}
-		return sp.RequestAddr.String(), nil
-	}
-}
-
-func NewHttpProxyProto(user, pass string) ProxyProto {
-	return func(ctx context.Context, local net.Conn) (addr string, err error) {
-		opts := []HttpOpt{WithHttpVersion(HttpProxyDefaultVersion)}
-		if len(user) != 0 && len(pass) != 0 {
-			opts = append(opts, WithHttpAuthUserPass(user, pass))
-		}
-		hp := NewHttpProcessor(local, opts...)
-		if err = hp.Process(ctx); err != nil {
-			return
-		}
-		return hp.RequestAddr, nil
-	}
-}
-
-// Endpoint implements the core logic of a endpoint program which runs
+// Endpoint implements the core logic of an endpoint program which runs
 // as a server-side or client-side of a tunnel respectively.
 type Endpoint struct {
 	typ            EndpointType
 	tunnel         Tunnel
+	proxy          LocalProxy
+	remoteDialer   RemoteDialer
 	network        string
 	serverAddr     string
 	clientAddr     string
-	proxyType      string
-	proxyProto     ProxyProto
 	concurrent     chan struct{}
 	maxAcceptDelay time.Duration
-	proxySetting   *ProxySetting
 	done           chan struct{}
 	exitWg         sync.WaitGroup
 }
@@ -96,8 +54,11 @@ func NewEndpoint(t EndpointType, network, runAddr string, tun Tunnel, opts ...En
 	for _, opt := range opts {
 		opt(obj)
 	}
-	if obj.proxyProto == nil {
-		obj.proxyProto = NewSocksV5ProxyProto("", "")
+	if obj.proxy == nil {
+		obj.proxy = NewSystemProxy(ProxyTypeHttp, NewHttpProxyProto("", ""))
+	}
+	if obj.remoteDialer == nil {
+		obj.remoteDialer = &defaultDialer{}
 	}
 	return obj, nil
 }
@@ -126,10 +87,15 @@ func WithEndpointMaxAcceptDelay(delay time.Duration) EndpointOpt {
 	}
 }
 
-func WithEndpointProxyProto(pt string, pp ProxyProto) EndpointOpt {
+func WithEndpointLocalProxy(proxy LocalProxy) EndpointOpt {
 	return func(e *Endpoint) {
-		e.proxyType = pt
-		e.proxyProto = pp
+		e.proxy = proxy
+	}
+}
+
+func WithEndpointRemoteDialer(dialer RemoteDialer) EndpointOpt {
+	return func(e *Endpoint) {
+		e.remoteDialer = dialer
 	}
 }
 
@@ -151,14 +117,15 @@ func (e *Endpoint) serveServer(ctx context.Context) (err error) {
 
 	var acceptDelay time.Duration
 	for {
-		conn, target, err := e.tunnel.Accept(ctx)
-		if err != nil {
+		conn, target, ae := e.tunnel.Accept(ctx)
+		if ae != nil {
 			select {
 			case <-e.done:
 				return ErrEndpointClosed
 			default:
 			}
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			var ne net.Error
+			if errors.As(ae, &ne) && ne != nil && ne.Timeout() {
 				if acceptDelay == 0 {
 					acceptDelay = 5 * time.Millisecond
 				} else {
@@ -170,7 +137,7 @@ func (e *Endpoint) serveServer(ctx context.Context) (err error) {
 				time.Sleep(acceptDelay)
 				continue
 			}
-			return err
+			return ae
 		}
 
 		reqCtx := NewLogID(ctx)
@@ -192,12 +159,12 @@ func (e *Endpoint) serveServer(ctx context.Context) (err error) {
 					<-e.concurrent // release a position if concurrent limited
 				}
 				if r := recover(); r != nil {
-					LogError(c, "server endpoiint panic at %s: %v", ac.ID(), r)
+					LogError(c, "server endpoint panic at %s: %v", ac.ID(), r)
 				}
 				e.exitWg.Done()
 			}()
 
-			rc, err := net.Dial(e.network, tgt)
+			rc, err := e.remoteDialer.DialRemote(c, e.network, tgt)
 			if err != nil {
 				return
 			}
@@ -211,16 +178,11 @@ func (e *Endpoint) serveServer(ctx context.Context) (err error) {
 
 func (e *Endpoint) serveClient(ctx context.Context) (err error) {
 	var listener net.Listener
-	if listener, err = net.Listen(e.network, e.clientAddr); err != nil {
-		return fmt.Errorf("client endpoint listen error %w", err)
+	if listener, err = e.proxy.Setup(ctx, e.network, e.clientAddr); err != nil {
+		return fmt.Errorf("client endpoint setup proxy error %w", err)
 	}
-	LogInfo(ctx, "client endpoint listen success at %s", e.clientAddr)
+	LogInfo(ctx, "client endpoint setup proxy success at %s:%s", e.network, e.clientAddr)
 	defer listener.Close()
-
-	e.proxySetting, err = SetupProxy(ctx, e.proxyType, e.clientAddr)
-	if err != nil {
-		return fmt.Errorf("client endpoint setup proxy failed: %v", err)
-	}
 
 	if err := e.tunnel.Open(ctx, e.network, e.serverAddr); err != nil {
 		return fmt.Errorf("open tunnel error %w", err)
@@ -230,14 +192,15 @@ func (e *Endpoint) serveClient(ctx context.Context) (err error) {
 
 	var acceptDelay time.Duration
 	for {
-		conn, err := listener.Accept()
-		if err != nil {
+		conn, ae := listener.Accept()
+		if ae != nil {
 			select {
 			case <-e.done:
 				return ErrEndpointClosed
 			default:
 			}
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			var ne net.Error
+			if errors.As(ae, &ne) && ne != nil && ne.Timeout() {
 				if acceptDelay == 0 {
 					acceptDelay = 5 * time.Millisecond
 				} else {
@@ -249,7 +212,7 @@ func (e *Endpoint) serveClient(ctx context.Context) (err error) {
 				time.Sleep(acceptDelay)
 				continue
 			}
-			return err
+			return ae
 		}
 
 		reqCtx := NewLogID(ctx)
@@ -267,12 +230,12 @@ func (e *Endpoint) serveClient(ctx context.Context) (err error) {
 					<-e.concurrent // release a position if concurrent limited
 				}
 				if r := recover(); r != nil {
-					LogError(c, "client endpoiint panic for %s: %v", conn.RemoteAddr(), r)
+					LogError(c, "client endpoint panic for %s: %v", conn.RemoteAddr(), r)
 				}
 				e.exitWg.Done()
 			}()
 
-			target, err := e.proxyProto(c, lc)
+			target, err := e.proxy.Handshake(c, lc)
 			if err != nil {
 				return
 			}
@@ -295,7 +258,7 @@ func (e *Endpoint) Close(ctx context.Context) {
 		_ = e.tunnel.Close()
 	}
 	if e.typ == EndpointClient {
-		if err := ResetProxy(ctx, e.proxySetting); err != nil {
+		if err := e.proxy.Reset(ctx); err != nil {
 			LogError(ctx, "reset proxy failed: %v", err)
 		}
 	}
