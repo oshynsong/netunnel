@@ -3,7 +3,7 @@ module github.com/oshynsong/netunnel
 go 1.24.5
 
 require (
-	github.com/gorilla/websocket v1.5.3
+	github.com/lxn/win v0.0.0-20210218163916-a377121e959e
 	github.com/spf13/cobra v1.9.1
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.10.0

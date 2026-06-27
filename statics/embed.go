@@ -6,8 +6,6 @@ import (
 )
 
 //go:embed *.ico
-//go:embed *.html
-//go:embed *.js
 var statics embed.FS
 
 func List() ([]string, error) {

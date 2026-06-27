@@ -36,7 +36,6 @@ var (
 	flagProxyAuthUser  string
 	flagProxyAuthPass  string
 	flagWithRemote     bool
-	flagLocalAddr      string
 	flagToolName       string
 )
 

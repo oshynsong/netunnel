@@ -26,6 +26,8 @@ type TCPTunnel struct {
 	transformerMaker func(key []byte) (Transformer, error)
 	privateKeyFile   string
 	publicKeyFile    string
+	privateKeyBytes  []byte
+	publicKeysBytes  []byte
 	authPrivateKey   ed25519.PrivateKey
 	authPublicKeys   []ed25519.PublicKey
 }
@@ -62,6 +64,18 @@ func WithTCPTunnelPublicKeyFile(k string) TCPTunnelOpt {
 	}
 }
 
+func WithTCPTunnelPrivateKeyBytes(key []byte) TCPTunnelOpt {
+	return func(t *TCPTunnel) {
+		t.privateKeyBytes = key
+	}
+}
+
+func WithTCPTunnelPublicKeysBytes(keys []byte) TCPTunnelOpt {
+	return func(t *TCPTunnel) {
+		t.publicKeysBytes = keys
+	}
+}
+
 func NewTCPTunnel(opts ...TCPTunnelOpt) (Tunnel, error) {
 	t := &TCPTunnel{}
 	for _, opt := range opts {
@@ -82,7 +96,10 @@ func NewTCPTunnel(opts ...TCPTunnelOpt) (Tunnel, error) {
 	// Parse private key with hex encoded string.
 	rawBytes, err := os.ReadFile(t.privateKeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("read private key file error: %w", err)
+		if len(t.privateKeyBytes) == 0 {
+			return nil, fmt.Errorf("read private key file error: %w", err)
+		}
+		rawBytes = t.privateKeyBytes
 	}
 	rawBytes = bytes.TrimSpace(rawBytes)
 	rawBytes, err = hex.DecodeString(string(rawBytes))
@@ -95,7 +112,10 @@ func NewTCPTunnel(opts ...TCPTunnelOpt) (Tunnel, error) {
 	// Parse multiple public keys with hex encoded string each line.
 	raw, err := os.ReadFile(t.publicKeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("read public key file error: %w", err)
+		if len(t.publicKeysBytes) == 0 {
+			return nil, fmt.Errorf("read public key file error: %w", err)
+		}
+		raw = t.publicKeysBytes
 	}
 	bs := bufio.NewScanner(bytes.NewReader(raw))
 	for bs.Scan() {
